@@ -1,0 +1,59 @@
+# ===== СЕКРЕТЫ (никогда не коммитить!) =====
+.env
+.env.local
+.env.*.local
+*.env
+.secrets/
+secrets/
+*.key
+*.pem
+credentials.json
+token.txt
+
+# ===== Базы данных =====
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== Сгенерированные отчёты/картинки =====
+reports/
+*.log
+logs/
+
+# ===== IDE / редакторы =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== Claude Code =====
+.claude/
+
+# ===== Alembic (если есть локальные версии) =====
+# alembic/versions/*.py  # раскомментируй если нужно
+
+# ===== Docker =====
+*.pid

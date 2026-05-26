@@ -1,0 +1,43 @@
+[project]
+name = "money-tg-bot"
+version = "0.1.0"
+description = "Telegram finance bot with bank and crypto integrations"
+requires-python = ">=3.11"
+dependencies = [
+  "aiogram>=3.16.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.32.0",
+  "sqlalchemy>=2.0.36",
+  "alembic>=1.14.0",
+  "asyncpg>=0.30.0",
+  "aiosqlite>=0.20.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.6.0",
+  "httpx>=0.28.0",
+  "apscheduler>=3.10.4",
+  "matplotlib>=3.9.2",
+  "python-dotenv>=1.0.1",
+  "cryptography>=43.0.3",
+  "beautifulsoup4>=4.12.0",
+  "mnemonic>=0.21",
+  "tonsdk>=1.0.15",
+  "bip_utils>=2.12.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.3",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.7.4",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
