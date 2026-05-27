@@ -503,7 +503,8 @@ async def _build_conversion_text(
         num = f"{abs(pct):.2f}"
         if "." in num:
             num = num.rstrip("0").rstrip(".")
-        pct_str = f" ({sign}{num}%)"
+        period_label = _t("inline.in_7_days", lang)
+        pct_str = f" ({sign}{num}% {period_label})"
     else:
         pct_str = ""
 
