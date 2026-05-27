@@ -1215,17 +1215,15 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
             chart_url = None
 
     if chart_url:
-        # Текст + URL в конце. LinkPreviewOptions говорит Telegram'у:
-        # — какую ссылку использовать для превью,
-        # — показать его БОЛЬШИМ (картинка карточки)
-        # — и поверх текста, как у CryptoBot.
-        message_text = f"{text}\n\n{chart_url}"
+        # URL не в тексте — Telegram возьмёт его из link_preview_options.url.
+        # show_above_text=True → превью сверху (как у CryptoBot).
+        # prefer_large_media=True → большая картинка, а не миниатюра.
         result = InlineQueryResultArticle(
             id=str(uuid.uuid4()),
             title=title,
             description=_t("inline.conversion_desc", lang),
             input_message_content=InputTextMessageContent(
-                message_text=message_text,
+                message_text=text,
                 parse_mode="HTML",
                 link_preview_options=LinkPreviewOptions(
                     url=chart_url,

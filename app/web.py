@@ -126,24 +126,21 @@ async def card_page(card_id: str) -> str:
     meta = _load_meta(card_id)
     if meta is None or not _png_path(card_id).exists():
         raise HTTPException(404, "card not found")
-    title, description = meta
     img_url = f"{BASE_URL}/i/{card_id}.png"
-    t = _html_escape(title)
-    d = _html_escape(description)
+    # Минимально возможный HTML: только og:image и og:type=website.
+    # Без og:title/description/site_name Telegram рендерит превью как чистую
+    # медиа-карточку (как у CryptoBot), без хедера и заголовков.
+    # Заголовок <title> пустой — иначе Telegram возьмёт его как название превью.
     return f"""<!DOCTYPE html>
-<html lang="en"><head>
+<html><head>
 <meta charset="utf-8">
-<title>{t}</title>
-<meta property="og:title" content="{t}">
-<meta property="og:description" content="{d}">
-<meta property="og:image" content="{img_url}">
-<meta property="og:image:width" content="1600">
-<meta property="og:image:height" content="1000">
+<title> </title>
 <meta property="og:type" content="website">
+<meta property="og:image" content="{img_url}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="{img_url}">
-</head><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;">
-<img src="{img_url}" style="max-width:100%;height:auto;" alt="{t}">
+</head><body style="margin:0;background:#000;">
+<img src="{img_url}" style="display:block;width:100%;height:auto;">
 </body></html>"""
 
 
