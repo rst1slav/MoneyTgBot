@@ -54,30 +54,193 @@ _ALSO_LIST = ["EUR", "UAH", "RUB", "BYN", "PLN", "UZS"]
 
 # Aliases — каждый сводится к каноническому ISO коду.
 _CCY_ALIASES: dict[str, str] = {
+    # ============ FIAT ============
     # USD
-    "USD": "USD", "ЮСД": "USD", "ЮСДИ": "USD", "ДОЛЛАР": "USD", "ДОЛЛАРЫ": "USD",
-    "ДОЛЛАРОВ": "USD", "ДОЛЛАРА": "USD", "ДОЛ": "USD", "БАКС": "USD", "БАКСОВ": "USD",
-    # USDT
-    "USDT": "USDT", "ТЕЗЕР": "USDT", "ТЕТЕР": "USDT", "ЮСДТ": "USDT",
+    "USD": "USD", "$": "USD", "ЮСД": "USD", "ЮСДИ": "USD", "ДОЛЛАР": "USD",
+    "ДОЛЛАРЫ": "USD", "ДОЛЛАРОВ": "USD", "ДОЛЛАРА": "USD", "ДОЛ": "USD",
+    "БАКС": "USD", "БАКСОВ": "USD", "БАКСЫ": "USD",
     # EUR
-    "EUR": "EUR", "ЕВРО": "EUR", "ЕВР": "EUR",
+    "EUR": "EUR", "€": "EUR", "ЕВРО": "EUR", "ЕВР": "EUR", "ЕУРО": "EUR",
+    # GBP
+    "GBP": "GBP", "£": "GBP", "ФУНТ": "GBP", "ФУНТЫ": "GBP", "ФУНТОВ": "GBP",
+    "ФУНТА": "GBP", "СТЕРЛИНГ": "GBP", "ГБП": "GBP",
+    # JPY
+    "JPY": "JPY", "¥": "JPY", "ЙЕНА": "JPY", "ЙЕН": "JPY", "ЕНА": "JPY",
+    "ИЕНА": "JPY", "ИЕН": "JPY",
+    # CNY
+    "CNY": "CNY", "ЮАНЬ": "CNY", "ЮАНИ": "CNY", "ЮАНЕЙ": "CNY", "ЮАНЯ": "CNY",
+    "RMB": "CNY", "ЖЕНЬМИНЬБИ": "CNY",
     # UAH
-    "UAH": "UAH", "ГРН": "UAH", "ГРИВНА": "UAH", "ГРИВНЫ": "UAH",
-    "ГРИВЕН": "UAH", "ГРИВНУ": "UAH", "ГРИВНІ": "UAH",
+    "UAH": "UAH", "₴": "UAH", "ГРН": "UAH", "ГРИВНА": "UAH", "ГРИВНЫ": "UAH",
+    "ГРИВЕН": "UAH", "ГРИВНУ": "UAH", "ГРИВНІ": "UAH", "ГРИВЕНЬ": "UAH",
     # RUB
-    "RUB": "RUB", "РУБ": "RUB", "РУБЛЬ": "RUB", "РУБЛИ": "RUB",
-    "РУБЛЕЙ": "RUB", "РУБЛЯ": "RUB", "РОССРУБ": "RUB",
+    "RUB": "RUB", "₽": "RUB", "РУБ": "RUB", "РУБЛЬ": "RUB", "РУБЛИ": "RUB",
+    "РУБЛЕЙ": "RUB", "РУБЛЯ": "RUB", "РОССРУБ": "RUB", "ДЕРЕВ": "RUB",
     # BYN
-    "BYN": "BYN", "БУН": "BYN", "БЕЛРУБ": "BYN", "БЕЛОРУСРУБ": "BYN",
+    "BYN": "BYN", "BYR": "BYN", "БУН": "BYN", "БЕЛРУБ": "BYN", "БЕЛОРУСРУБ": "BYN",
     "БЕЛРУБЛЬ": "BYN", "БЕЛРУБЛИ": "BYN", "ЗАЯЦ": "BYN",
     # PLN
     "PLN": "PLN", "ЗЛОТЫЙ": "PLN", "ЗЛОТ": "PLN", "ЗЛОТЫХ": "PLN",
     "ЗЛОТЫЕ": "PLN", "ПЛН": "PLN",
+    # KZT
+    "KZT": "KZT", "₸": "KZT", "ТЕНГЕ": "KZT", "ТЕНЬГЕ": "KZT", "КЗТ": "KZT",
+    # KGS
+    "KGS": "KGS", "СОМ": "KGS", "СОМЫ": "KGS", "СОМОВ": "KGS",
     # UZS
     "UZS": "UZS", "СУМ": "UZS", "СУМЫ": "UZS", "СУММ": "UZS",
     "СУМОВ": "UZS", "УЗБСУМ": "UZS",
-    # TON
+    # TJS
+    "TJS": "TJS", "СОМОНИ": "TJS",
+    # GEL
+    "GEL": "GEL", "₾": "GEL", "ЛАРИ": "GEL", "ГРУЗЛАРИ": "GEL",
+    # AMD
+    "AMD": "AMD", "ДРАМ": "AMD", "ДРАМЫ": "AMD", "АРМДРАМ": "AMD",
+    # AZN
+    "AZN": "AZN", "МАНАТ": "AZN", "МАНАТЫ": "AZN", "АЗНМАНАТ": "AZN",
+    # MDL
+    "MDL": "MDL", "ЛЕЙ": "MDL", "МОЛДЛЕЙ": "MDL",
+    # TRY
+    "TRY": "TRY", "₺": "TRY", "ЛИРА": "TRY", "ЛИРЫ": "TRY", "ТУРЛИРА": "TRY",
+    "ТРЛ": "TRY",
+    # INR
+    "INR": "INR", "₹": "INR", "РУПИЯ": "INR", "РУПИИ": "INR", "ИНДРУПИЯ": "INR",
+    # KRW
+    "KRW": "KRW", "₩": "KRW", "ВОНА": "KRW", "ВОН": "KRW", "КОРВОН": "KRW",
+    # BRL
+    "BRL": "BRL", "РЕАЛ": "BRL", "РЕАЛЫ": "BRL", "БРЗРЕАЛ": "BRL",
+    # MXN
+    "MXN": "MXN", "ПЕСО": "MXN", "МЕКСПЕСО": "MXN",
+    # CAD
+    "CAD": "CAD", "КАНДОЛ": "CAD", "КАНАДДОЛ": "CAD",
+    # AUD
+    "AUD": "AUD", "АВСДОЛ": "AUD",
+    # CHF
+    "CHF": "CHF", "ФРАНК": "CHF", "ФРАНКИ": "CHF",
+    # HKD
+    "HKD": "HKD", "ГКДОЛ": "HKD",
+    # SGD
+    "SGD": "SGD", "СГД": "SGD",
+    # AED
+    "AED": "AED", "ДИРХАМ": "AED", "ДИРХАМЫ": "AED",
+    # SAR
+    "SAR": "SAR", "РИАЛ": "SAR",
+    # ILS
+    "ILS": "ILS", "₪": "ILS", "ШЕКЕЛЬ": "ILS", "ШЕКЕЛИ": "ILS",
+    # NOK / SEK / DKK
+    "NOK": "NOK", "НОРКРОНА": "NOK",
+    "SEK": "SEK", "ШВЕДКРОНА": "SEK",
+    "DKK": "DKK", "ДАТКРОНА": "DKK",
+    # CZK / HUF / RON / BGN
+    "CZK": "CZK", "ЧЕШКРОНА": "CZK", "КРОНА": "CZK",
+    "HUF": "HUF", "ФОРИНТ": "HUF",
+    "RON": "RON", "РУМЛЕЙ": "RON",
+    "BGN": "BGN", "ЛЕВ": "BGN", "БОЛГЛЕВ": "BGN",
+    # ZAR / NZD
+    "ZAR": "ZAR", "РЭНД": "ZAR", "РАНД": "ZAR",
+    "NZD": "NZD", "НЗД": "NZD",
+    # THB / MYR / IDR / PHP / VND
+    "THB": "THB", "БАТ": "THB", "ТАЙБАТ": "THB",
+    "MYR": "MYR", "РИНГГИТ": "MYR",
+    "IDR": "IDR", "РУПИЯИ": "IDR",
+    "PHP": "PHP", "ФИЛПЕСО": "PHP",
+    "VND": "VND", "ДОНГ": "VND",
+    # EGP / NGN / PKR / BDT / ARS / CLP / COP / PEN
+    "EGP": "EGP", "ЕГИПФУНТ": "EGP",
+    "NGN": "NGN", "НАИРА": "NGN",
+    "PKR": "PKR", "ПАКРУПИЯ": "PKR",
+    "BDT": "BDT", "ТАКА": "BDT",
+    "ARS": "ARS", "АРГПЕСО": "ARS",
+    "CLP": "CLP", "ЧИЛПЕСО": "CLP",
+    "COP": "COP", "КОЛПЕСО": "COP",
+    "PEN": "PEN", "СОЛЬ": "PEN",
+
+    # ============ CRYPTO ============
+    # Stables
+    "USDT": "USDT", "ТЕЗЕР": "USDT", "ТЕТЕР": "USDT", "ЮСДТ": "USDT",
+    "USDC": "USDC", "ЮСДЦ": "USDC",
+    "DAI": "DAI",
+    "BUSD": "BUSD",
+    "TUSD": "TUSD",
+    "FDUSD": "FDUSD",
+    # L1 / majors
+    "BTC": "BTC", "₿": "BTC", "БИТКОИН": "BTC", "БИТКОЙН": "BTC",
+    "БИТКОИНЫ": "BTC", "БИТОК": "BTC", "БТЦ": "BTC", "BITCOIN": "BTC", "XBT": "BTC",
+    "ETH": "ETH", "Ξ": "ETH", "ЭФИР": "ETH", "ЭФИРИУМ": "ETH",
+    "ETHEREUM": "ETH", "ЕТХ": "ETH",
+    "SOL": "SOL", "СОЛАНА": "SOL", "СОЛЬ2": "SOL", "SOLANA": "SOL",
+    "BNB": "BNB", "БНБ": "BNB", "БИНКОИН": "BNB",
+    "XRP": "XRP", "РИППЛ": "XRP", "РЫБА": "XRP",
+    "ADA": "ADA", "КАРДАНО": "ADA", "АДА": "ADA",
+    "DOGE": "DOGE", "ДОГИ": "DOGE", "ДОГ": "DOGE", "ДОГКОИН": "DOGE",
+    "TRX": "TRX", "ТРОН": "TRX",
+    "AVAX": "AVAX", "АВАКС": "AVAX", "АВАЛАНЧ": "AVAX",
+    "MATIC": "MATIC", "МАТИК": "MATIC", "ПОЛИГОН": "MATIC", "POL": "MATIC",
+    "DOT": "DOT", "ПОЛКАДОТ": "DOT", "ДОТ": "DOT",
+    "LTC": "LTC", "ЛАЙТКОИН": "LTC", "ЛАЙТ": "LTC",
+    "LINK": "LINK", "ЧЕЙНЛИНК": "LINK", "ЛИНК": "LINK",
+    "ATOM": "ATOM", "КОСМОС": "ATOM", "АТОМ": "ATOM",
+    "NEAR": "NEAR", "НИАР": "NEAR",
+    "ICP": "ICP",
+    "FIL": "FIL", "ФАЙЛКОИН": "FIL", "ФАЙЛ": "FIL",
+    "VET": "VET", "ВЕЧЕЙН": "VET",
+    "ALGO": "ALGO", "АЛГО": "ALGO", "АЛГОРАНД": "ALGO",
+    "EOS": "EOS",
+    "XLM": "XLM", "СТЕЛЛАР": "XLM", "СТЕЛЛАРЛЮМЕНС": "XLM",
+    "XMR": "XMR", "МОНЕРО": "XMR",
+    "BCH": "BCH", "БИТКЭШ": "BCH",
+    "ETC": "ETC", "ЭФИРКЛАССИК": "ETC",
+    "HBAR": "HBAR", "ХБАР": "HBAR", "ХЕДЕРА": "HBAR",
+    "ARB": "ARB", "АРБИТРУМ": "ARB",
+    "OP": "OP", "ОПТИМИЗМ": "OP",
+    "APT": "APT", "АПТОС": "APT",
+    "SUI": "SUI", "СУЙ": "SUI",
+    "TIA": "TIA", "ЦЕЛЕСТИЯ": "TIA",
+    "SEI": "SEI",
+    "INJ": "INJ", "ИНДЖЕКТИВ": "INJ",
+    "STRK": "STRK", "СТАРКНЕТ": "STRK",
+    "RNDR": "RNDR", "РЕНДЕР": "RNDR", "RENDER": "RNDR",
+    "FET": "FET",
+    "GRT": "GRT", "ГРАФ": "GRT",
+    "AAVE": "AAVE", "АВЕ": "AAVE",
+    "MKR": "MKR", "МЕЙКЕР": "MKR",
+    "UNI": "UNI", "ЮНИСВАП": "UNI", "ЮНИ": "UNI",
+    "CRV": "CRV", "КЁРВ": "CRV", "КЁРВЕ": "CRV",
+    "COMP": "COMP",
+    "SNX": "SNX",
+    "LDO": "LDO", "ЛИДО": "LDO",
+    "SAND": "SAND", "САНДБОКС": "SAND",
+    "MANA": "MANA", "ДЕЦЕНТРАЛЭНД": "MANA",
+    "AXS": "AXS", "АКСИИ": "AXS",
+    "GALA": "GALA", "ГАЛА": "GALA",
+    "IMX": "IMX",
+    "FLOW": "FLOW",
+    # Memes
+    "SHIB": "SHIB", "ШИБА": "SHIB", "ШИБИНУ": "SHIB",
+    "PEPE": "PEPE", "ПЕПЕ": "PEPE", "ЛЯГУШКА": "PEPE",
+    "WIF": "WIF", "ВИФ": "WIF",
+    "BONK": "BONK", "БОНК": "BONK",
+    "FLOKI": "FLOKI", "ФЛОКИ": "FLOKI",
+    "MEW": "MEW",
+    "POPCAT": "POPCAT",
+    "TURBO": "TURBO",
+    # TON-экосистема
     "TON": "TON", "ТОН": "TON", "ТОНКОИН": "TON", "ТОНКОИНЫ": "TON",
+    "TONCOIN": "TON",
+    "NOT": "NOT", "НОТ": "NOT", "НОТКОИН": "NOT", "NOTCOIN": "NOT",
+    "DOGS": "DOGS", "ДОГС": "DOGS",
+    "HMSTR": "HMSTR", "ХАМСТЕР": "HMSTR", "ХОМЯК": "HMSTR",
+    "MAJOR": "MAJOR", "МАЖОР": "MAJOR",
+    "CATI": "CATI", "КАТИ": "CATI", "КАТИЗЕН": "CATI",
+    "REDO": "REDO",
+    "DURIK": "DURIK", "ДУРИК": "DURIK",
+    "STON": "STON",
+    "BOLT": "BOLT",
+    "JETTON": "JETTON",
+    "UTYA": "UTYA", "УТЯ": "UTYA",
+    "FPI": "FPI",
+    "JUP": "JUP", "ЮПИТЕР": "JUP",
+    "TRUMP": "TRUMP", "ТРАМП": "TRUMP",
+    "PNUT": "PNUT", "ПИНАТ": "PNUT",
 }
 
 # Multi-word phrases — нормализуются до канонического кода ДО токенизации.
@@ -227,6 +390,7 @@ _cg_rate_cache: dict[str, tuple[Decimal | None, float]] = {}
 _CG_TTL = 300
 # Manual ticker → coin-id map for tickers ambiguous on CoinGecko search.
 _CG_TICKER_OVERRIDES: dict[str, str] = {
+    # Majors
     "TON":   "the-open-network",
     "BTC":   "bitcoin",
     "ETH":   "ethereum",
@@ -241,13 +405,68 @@ _CG_TICKER_OVERRIDES: dict[str, str] = {
     "MATIC": "matic-network",
     "DOT":   "polkadot",
     "LTC":   "litecoin",
+    "BCH":   "bitcoin-cash",
+    "XMR":   "monero",
+    "ETC":   "ethereum-classic",
+    "ATOM":  "cosmos",
+    "NEAR":  "near",
+    "ICP":   "internet-computer",
+    "FIL":   "filecoin",
+    "VET":   "vechain",
+    "ALGO":  "algorand",
+    "EOS":   "eos",
+    "XLM":   "stellar",
+    "HBAR":  "hedera-hashgraph",
+    "ARB":   "arbitrum",
+    "OP":    "optimism",
+    "APT":   "aptos",
+    "SUI":   "sui",
+    "TIA":   "celestia",
+    "SEI":   "sei-network",
+    "INJ":   "injective-protocol",
+    "STRK":  "starknet",
+    "RNDR":  "render-token",
+    "FET":   "fetch-ai",
+    "GRT":   "the-graph",
+    # DeFi
+    "AAVE":  "aave",
+    "MKR":   "maker",
+    "UNI":   "uniswap",
+    "CRV":   "curve-dao-token",
+    "COMP":  "compound-governance-token",
+    "SNX":   "havven",
+    "LDO":   "lido-dao",
+    # Gaming
+    "SAND":  "the-sandbox",
+    "MANA":  "decentraland",
+    "AXS":   "axie-infinity",
+    "GALA":  "gala",
+    "IMX":   "immutable-x",
+    "FLOW":  "flow",
+    # Stables
+    "USDC":  "usd-coin",
+    "DAI":   "dai",
+    "BUSD":  "binance-usd",
+    "TUSD":  "true-usd",
+    "FDUSD": "first-digital-usd",
+    # Memes
+    "SHIB":  "shiba-inu",
+    "PEPE":  "pepe",
+    "WIF":   "dogwifcoin",
+    "BONK":  "bonk",
+    "FLOKI": "floki",
+    "MEW":   "cat-in-a-dogs-world",
+    "POPCAT":"popcat",
+    "TURBO": "turbo",
+    "TRUMP": "official-trump",
+    "PNUT":  "peanut-the-squirrel",
+    # TON ecosystem
     "DOGS":  "dogs-2",
     "NOT":   "notcoin",
     "MAJOR": "major",
     "HMSTR": "hamster-kombat",
     "CATI":  "catizen",
-    "WIF":   "dogwifcoin",
-    "PEPE":  "pepe",
+    "JUP":   "jupiter-exchange-solana",
 }
 
 
