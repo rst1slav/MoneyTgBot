@@ -1335,7 +1335,8 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
         chart_url = None
 
     if chart_url:
-        msg_text = f"{text}\n\n{chart_url}"
+        # URL не в тексте — Telegram возьмёт его из link_preview_options.url
+        msg_text = text
         link_preview = LinkPreviewOptions(
             url=chart_url,
             prefer_large_media=True,
