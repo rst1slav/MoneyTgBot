@@ -406,6 +406,10 @@ def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
     parts = [p for p in s.upper().split() if p]
     if not parts or len(parts) > 3:
         return None
+    # Лимит в 19 символов на любой токен — отсекает огромные числа типа 10^19,
+    # чтобы карточка не превращалась в кашу и арифметика не уходила в overflow.
+    if any(len(p) > 19 for p in parts):
+        return None
     amount = Decimal("1")
     first = parts[0].replace(",", ".")
     try:

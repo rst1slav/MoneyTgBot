@@ -1214,6 +1214,33 @@ class ConversionCard:
         return f"conv|{self.base}|{self.quote}|{self.base_amount:.6f}|{self.quote_amount:.6f}"
 
 
+def _fit_amount_font(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    *,
+    max_width: int,
+    max_size_px: int,
+    min_size_px: int,
+) -> ImageFont.FreeTypeFont:
+    """
+    Подбирает максимальный bold-шрифт такого размера (в пикселях),
+    чтобы текст влез в `max_width`. Если даже min_size не помещается —
+    возвращает min_size_px (текст обрежется визуально, что лучше наезжания).
+    """
+    lo, hi = min_size_px, max_size_px
+    best = _font(min_size_px, weight="bold")
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = _font(mid, weight="bold")
+        w = draw.textbbox((0, 0), text, font=font)[2]
+        if w <= max_width:
+            best = font
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def _fmt_card_amount(value: float) -> str:
     """Форматирование суммы для conv-карточки: 2 знака, trailing zeros убраны,
     тысячные пробелами. '24310.291' → '24 310.29', '1.00' → '1', '240' → '240'."""
@@ -1273,15 +1300,27 @@ def render_conversion_card(card: ConversionCard) -> bytes:
     img.alpha_composite(base_badge, (s(200), s(base_badge_y)))
 
     ticker_font = _font(s(90), weight="bold")
-    amount_font = _font(s(100), weight="bold")
 
     base_ticker = card.base.upper()
-    drw.text((s(400), s(base_center_y)), base_ticker,
+    ticker_left_x = 400
+    drw.text((s(ticker_left_x), s(base_center_y)), base_ticker,
              font=ticker_font, fill=_CONV_TEXT, anchor="lm")
 
+    # Считаем где заканчивается тикер, чтобы амоунт не наехал.
+    ticker_bbox = drw.textbbox(
+        (s(ticker_left_x), s(base_center_y)), base_ticker,
+        font=ticker_font, anchor="lm",
+    )
+    base_ticker_right = ticker_bbox[2]
+
     base_amount_str = _fmt_card_amount(card.base_amount)
+    amount_font_base = _fit_amount_font(
+        drw, base_amount_str,
+        max_width=s(1400) - base_ticker_right - s(40),  # 40px зазор
+        max_size_px=s(100), min_size_px=s(28),
+    )
     drw.text((s(1400), s(base_center_y)), base_amount_str,
-             font=amount_font, fill=_CONV_TEXT, anchor="rm")
+             font=amount_font_base, fill=_CONV_TEXT, anchor="rm")
 
     # --- 5. Разделители и центральный круг с иконкой ---
     DIVIDER_Y = 500
@@ -1321,12 +1360,23 @@ def render_conversion_card(card: ConversionCard) -> bytes:
     img.alpha_composite(quote_badge, (s(200), s(quote_badge_y)))
 
     quote_ticker = card.quote.upper()
-    drw.text((s(400), s(quote_center_y)), quote_ticker,
+    drw.text((s(ticker_left_x), s(quote_center_y)), quote_ticker,
              font=ticker_font, fill=_CONV_TEXT, anchor="lm")
 
+    quote_ticker_bbox = drw.textbbox(
+        (s(ticker_left_x), s(quote_center_y)), quote_ticker,
+        font=ticker_font, anchor="lm",
+    )
+    quote_ticker_right = quote_ticker_bbox[2]
+
     quote_amount_str = _fmt_card_amount(card.quote_amount)
+    amount_font_quote = _fit_amount_font(
+        drw, quote_amount_str,
+        max_width=s(1400) - quote_ticker_right - s(40),
+        max_size_px=s(100), min_size_px=s(28),
+    )
     drw.text((s(1400), s(quote_center_y)), quote_amount_str,
-             font=amount_font, fill=_CONV_TEXT, anchor="rm")
+             font=amount_font_quote, fill=_CONV_TEXT, anchor="rm")
 
     # --- 7. Downsample ---
     if SS != 1:
