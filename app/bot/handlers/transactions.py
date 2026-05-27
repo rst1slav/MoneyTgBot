@@ -373,6 +373,25 @@ _fmt_main = _fmt_amount
 _fmt_also = _fmt_amount
 
 
+def _fmt_price_like_card(value: Decimal) -> str:
+    """
+    Форматирование "как на rate-карточке": >=1 → 2 знака с обрезкой нулей,
+    мелкие — больше precision. Используется для строки конверсии, чтобы число
+    в тексте точно совпадало с числом на картинке.
+    """
+    sign = "-" if value < 0 else ""
+    abs_v = abs(value)
+    if abs_v >= 1:
+        s = f"{abs_v:,.2f}".replace(",", " ")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return f"{sign}{s}"
+    if abs_v >= Decimal("0.0001"):
+        # 4 значащих цифры, как на картинке
+        return f"{sign}{float(abs_v):.4g}"
+    return f"{sign}{float(abs_v):.2e}"
+
+
 def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
     """
     Parses query into (amount, base, target_or_None).
@@ -490,7 +509,7 @@ async def _build_conversion_text(
 
     return (
         f"{icon} {_fmt_main(amount)} {base} = "
-        f"{_fmt_main(target_amount)} {target}{pct_str}"
+        f"{_fmt_price_like_card(target_amount)} {target}{pct_str}"
     )
 
 
