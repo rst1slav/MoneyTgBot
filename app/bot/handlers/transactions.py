@@ -508,9 +508,10 @@ async def _upload_card_to_web(
     description: str = "",
 ) -> str | None:
     """
-    Загружает PNG на наш веб-сервис и возвращает page_url, который можно вставлять
-    в сообщения — Telegram сам подгрузит превью через og:image.
-    Возвращает None при ошибке.
+    Загружает PNG на наш веб-сервис и возвращает **image_url** — прямую ссылку
+    на PNG. Telegram при таком URL (Content-Type: image/png) показывает превью
+    как нативную картинку и открывает её в своём вьювере при тапе, а не редиректит
+    в браузер. (Как у CryptoBot.)
     """
     if not _CARD_UPLOAD_URL:
         return None
@@ -523,9 +524,9 @@ async def _upload_card_to_web(
             r = await client.post(_CARD_UPLOAD_URL, files=files, data=data)
             r.raise_for_status()
             payload = r.json()
-        page_url = payload.get("page_url")
-        if isinstance(page_url, str) and page_url.startswith("http"):
-            return page_url
+        image_url = payload.get("image_url")
+        if isinstance(image_url, str) and image_url.startswith("http"):
+            return image_url
     except Exception as exc:
         _log.warning("Card upload to web failed: %s", exc)
     return None
