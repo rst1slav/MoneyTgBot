@@ -538,6 +538,9 @@ def _fx_refresh_keyboard(
 # preview_url — это публичная ссылка на нашу страницу с og:image (хостится на нашем веб-сервисе).
 # Telegram сам подтягивает превью из URL.
 _fx_chart_url_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
+# Cache for conversion cards: (amount_str, base, target, lang) → (url, ts).
+# Карточка-конвертация зависит и от суммы, поэтому ключ включает её.
+_conv_card_url_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
 _FX_CHART_TTL = 1800  # 30 min
 
 # Куда заливать сгенерированные PNG. Если пусто — фоллбэк на старый flow с storage chat.
@@ -981,6 +984,94 @@ async def _build_and_cache_fx_chart(bot, base: str, target: str, lang: str) -> s
         _fx_chart_in_progress.pop(key, None)
 
 
+def _conv_amount_key(amount: Decimal) -> str:
+    """Стабильное строковое представление суммы для ключа кэша."""
+    s = format(amount.normalize(), "f")
+    if s.endswith("."):
+        s = s[:-1]
+    return s
+
+
+def _cached_conv_preview_url(
+    amount: Decimal, base: str, target: str, lang: str,
+) -> str | None:
+    key = (_conv_amount_key(amount), base.upper(), target.upper(), lang)
+    cached = _conv_card_url_cache.get(key)
+    if cached and _time.time() - cached[1] < _FX_CHART_TTL:
+        return cached[0]
+    return None
+
+
+async def _build_and_cache_conv_card(
+    bot, amount: Decimal, base: str, target: str, lang: str,
+) -> str | None:
+    """
+    Рендерит conversion-карточку (для запросов с конкретной суммой, не равной 1)
+    и грузит на наш веб-сервис. Возвращает image_url.
+
+    Использует ту же 7-дневную историю что и rate-карточка → курс совпадает с
+    тем, что бот пишет в тексте сообщения.
+    """
+    key = (_conv_amount_key(amount), base.upper(), target.upper(), lang)
+    try:
+        # Берём ту же историю что и rate-карточка → курс будет совпадать с текстом.
+        prices = await _fx_history(base, target, days=7)
+        if prices and len(prices) >= 1:
+            current_rate = float(prices[-1][1])
+        else:
+            # Фоллбэк — живой курс
+            base_usd = await _usd_rate_for(base)
+            target_usd = await _usd_rate_for(target)
+            if not base_usd or not target_usd or target_usd <= 0:
+                return None
+            current_rate = float(base_usd / target_usd)
+
+        if current_rate <= 0:
+            return None
+
+        from app.services.card_service import (
+            ConversionCard, render_conversion_card_to_disk,
+        )
+
+        base_amount_f = float(amount)
+        quote_amount_f = base_amount_f * current_rate
+        card = ConversionCard(
+            base=base.upper(),
+            quote=target.upper(),
+            base_amount=base_amount_f,
+            quote_amount=quote_amount_f,
+        )
+
+        async with _fx_render_lock:
+            try:
+                path = render_conversion_card_to_disk(card)
+            except Exception as exc:
+                _log.exception("Conv card render failed: %s", exc)
+                return None
+
+        try:
+            png_bytes = path.read_bytes()
+        except Exception as exc:
+            _log.warning("Conv card read failed: %s", exc)
+            return None
+
+        title = f"{base.upper()} → {target.upper()}"
+        description = f"{base_amount_f} {base.upper()} = {quote_amount_f:.4g} {target.upper()}"
+
+        image_url = await _upload_card_to_web(
+            png_bytes, title=title, description=description,
+        )
+        if not image_url:
+            _log.warning("Conv card web upload failed for %s/%s", base, target)
+            return None
+
+        _conv_card_url_cache[key] = (image_url, _time.time())
+        return image_url
+    except Exception as exc:
+        _log.exception("Conv card build failed: %s", exc)
+        return None
+
+
 async def _user_lang_and_currency(telegram_id: int) -> tuple[str, str]:
     """Returns (language, base_currency_code) for the inline-query user."""
     from app.i18n import get_user_lang
@@ -1243,21 +1334,35 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
     effective_target = target or default_ccy
     title = f"{_fmt_main(amount)} {base} → {effective_target}"
 
-    # Пытаемся отдать карточку уже в первом ответе: ждём фоновую генерацию до 4с.
-    # Если успели — шлём текст + ссылку с превью (картинка появится над текстом
-    # благодаря og:image на нашей странице). Не успели — текст без превью,
-    # фоновая задача дорендерит, и следующий инлайн-запрос получит карточку.
-    chart_url = _cached_fx_preview_url(base, effective_target, lang)
-    if chart_url is None:
-        bg_task = asyncio.create_task(_build_and_cache_fx_chart(
-            inline_query.bot, base, effective_target, lang,
-        ))
-        try:
-            chart_url = await asyncio.wait_for(
-                asyncio.shield(bg_task), timeout=4.0,
-            )
-        except asyncio.TimeoutError:
-            chart_url = None
+    # Выбираем тип карточки: для amount=1 — rate-карточка с графиком,
+    # для остальных — conversion-карточка с конкретными суммами.
+    is_conversion = amount != Decimal("1")
+
+    chart_url: str | None
+    if is_conversion:
+        chart_url = _cached_conv_preview_url(amount, base, effective_target, lang)
+        if chart_url is None:
+            bg_task = asyncio.create_task(_build_and_cache_conv_card(
+                inline_query.bot, amount, base, effective_target, lang,
+            ))
+            try:
+                chart_url = await asyncio.wait_for(
+                    asyncio.shield(bg_task), timeout=4.0,
+                )
+            except asyncio.TimeoutError:
+                chart_url = None
+    else:
+        chart_url = _cached_fx_preview_url(base, effective_target, lang)
+        if chart_url is None:
+            bg_task = asyncio.create_task(_build_and_cache_fx_chart(
+                inline_query.bot, base, effective_target, lang,
+            ))
+            try:
+                chart_url = await asyncio.wait_for(
+                    asyncio.shield(bg_task), timeout=4.0,
+                )
+            except asyncio.TimeoutError:
+                chart_url = None
 
     if chart_url:
         # URL не в тексте — Telegram возьмёт его из link_preview_options.url.
@@ -1330,6 +1435,7 @@ async def _edit_inline_message(
 async def _background_chart_refresh(
     bot,
     callback: CallbackQuery,
+    amount: Decimal,
     base: str,
     target: str,
     lang: str,
@@ -1338,11 +1444,15 @@ async def _background_chart_refresh(
     old_url: str | None,
 ) -> None:
     """
-    Запускается в фоне после edit_inline_message. Пересобирает карточку и,
-    если URL изменился, делает второй edit, чтобы Telegram подтянул новое превью.
+    Запускается в фоне после edit_inline_message. Пересобирает нужный тип
+    карточки (rate или conversion в зависимости от amount) и, если URL
+    изменился, делает второй edit, чтобы Telegram подтянул новое превью.
     """
     try:
-        new_url = await _build_and_cache_fx_chart(bot, base, target, lang)
+        if amount != Decimal("1"):
+            new_url = await _build_and_cache_conv_card(bot, amount, base, target, lang)
+        else:
+            new_url = await _build_and_cache_fx_chart(bot, base, target, lang)
         if not new_url or new_url == old_url:
             return
         lpo = LinkPreviewOptions(
@@ -1436,7 +1546,12 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     bot = callback.bot
 
     # --- 6. Старый URL для превью (картинка остаётся пока рендерится новая) ---
-    old_url = _cached_fx_preview_url(base, effective_target, lang)
+    is_conversion = amount != Decimal("1")
+    if is_conversion:
+        old_url = _cached_conv_preview_url(amount, base, effective_target, lang)
+    else:
+        old_url = _cached_fx_preview_url(base, effective_target, lang)
+
     if old_url:
         link_preview = LinkPreviewOptions(
             url=old_url, prefer_large_media=True, show_above_text=True,
@@ -1447,11 +1562,18 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     # --- 7. Мгновенный edit с новыми цифрами + старая картинка ---
     await _edit_inline_message(bot, callback, text, keyboard, link_preview)
 
-    # --- 8. Сбрасываем URL-кэш ТЕПЕРЬ и запускаем рендер в фоне ---
-    for key in list(_fx_chart_url_cache.keys()):
-        if key[0] == base.upper() and (target is None or key[1] == target.upper()):
-            _fx_chart_url_cache.pop(key, None)
+    # --- 8. Сбрасываем нужный URL-кэш и запускаем рендер в фоне ---
+    if is_conversion:
+        amt_key = _conv_amount_key(amount)
+        for key in list(_conv_card_url_cache.keys()):
+            if (key[0] == amt_key and key[1] == base.upper()
+                    and (target is None or key[2] == target.upper())):
+                _conv_card_url_cache.pop(key, None)
+    else:
+        for key in list(_fx_chart_url_cache.keys()):
+            if key[0] == base.upper() and (target is None or key[1] == target.upper()):
+                _fx_chart_url_cache.pop(key, None)
 
     asyncio.create_task(_background_chart_refresh(
-        bot, callback, base, effective_target, lang, text, keyboard, old_url,
+        bot, callback, amount, base, effective_target, lang, text, keyboard, old_url,
     ))

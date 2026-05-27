@@ -1169,3 +1169,169 @@ def render_rate_card_to_disk(card: RateCard) -> Path:
     if not path.exists():
         path.write_bytes(render_rate_card(card))
     return path
+
+
+# ---------------------------------------------------------------------------
+# Conversion card — when user enters a specific amount (e.g. "240 USD UAH")
+# Mirror of Yona.svg (1600×1000 with white 1400×800 card on dark gradient).
+# Layout:
+#   top row    — base badge + base ticker label + input amount (right)
+#   middle     — gray "↗↙" icon flanked by dividers
+#   bottom row — quote badge + quote ticker label + converted amount (right)
+# ---------------------------------------------------------------------------
+
+# Center "arrow" icon: two diagonal arrows (↗ and ↙). Path lifted verbatim from
+# the SVG (viewbox ≈ 56×56). Drawn inside the 132×132 gray circle.
+_SVG_CONV_ARROW_VIEWBOX = (60, 60)
+_SVG_CONV_ARROW_PATH = (
+    "M53.012 20.005C54.668 20.006 56.012 21.349 56.012 23.005V40.509"
+    "C56.012 42.166 54.668 43.509 53.012 43.509C51.355 43.509 50.012 42.166 50.012 40.509"
+    "V30.248L25.126 55.134C23.954 56.305 22.055 56.305 20.884 55.134"
+    "C19.712 53.963 19.712 52.063 20.884 50.891L45.769 26.005H35.508"
+    "C33.851 26.005 32.508 24.662 32.508 23.005C32.508 21.349 33.851 20.005 35.508 20.005H53.012Z"
+    "M30.886 0.878C32.057 -0.293 33.956 -0.293 35.128 0.878"
+    "C36.299 2.05 36.299 3.95 35.128 5.122L10.243 30.007H20.504"
+    "C22.161 30.007 23.504 31.351 23.504 33.007C23.504 34.664 22.161 36.007 20.504 36.007H3"
+    "C1.343 36.007 0 34.664 0 33.007V15.503"
+    "C0 13.847 1.343 12.504 3 12.504C4.657 12.504 6 13.847 6 15.503V25.765L30.886 0.878Z"
+)
+
+_CONV_BG_TOP = _RATE_DARK_TOP        # #252222
+_CONV_BG_BOT = _RATE_DARK_BOT        # #100C0C
+_CONV_DIVIDER = (235, 235, 235)      # #EBEBEB
+_CONV_ARROW_INK = (0, 0, 0)          # черный с alpha 0.7
+_CONV_TEXT = (0, 0, 0)               # цифры и тикеры — черный
+
+
+@dataclass
+class ConversionCard:
+    base: str
+    quote: str
+    base_amount: float
+    quote_amount: float
+
+    def cache_key(self) -> str:
+        return f"conv|{self.base}|{self.quote}|{self.base_amount:.6f}|{self.quote_amount:.6f}"
+
+
+def _fmt_card_amount(value: float) -> str:
+    """Форматирование суммы для conv-карточки: 2 знака, trailing zeros убраны,
+    тысячные пробелами. '24310.291' → '24 310.29', '1.00' → '1', '240' → '240'."""
+    sign = "-" if value < 0 else ""
+    abs_v = abs(value)
+    if abs_v >= 1:
+        s = f"{abs_v:,.2f}".replace(",", " ")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return f"{sign}{s}"
+    if abs_v >= 0.0001:
+        return f"{sign}{abs_v:.4g}"
+    return f"{sign}{abs_v:.2e}"
+
+
+def render_conversion_card(card: ConversionCard) -> bytes:
+    """
+    Рендерит карточку конвертации по дизайну Yona.svg.
+    1600×1000, тёмный фон, белый блок 1400×800 (rx=90) внутри.
+    """
+    SS = 2
+    s = lambda v: int(round(v * SS))     # noqa: E731
+
+    W, H = _RATE_W * SS, _RATE_H * SS
+
+    # --- 1. Тёмный градиентный фон + watermark (тот же что у rate card) ---
+    bg = _vertical_gradient(W, H, _CONV_BG_TOP, _CONV_BG_BOT).convert("RGBA")
+    bg.alpha_composite(_watermark_layer(W, H))
+
+    # --- 2. Тень белой карточки ---
+    shadow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow_layer).rounded_rectangle(
+        (s(_RATE_CARD_X), s(_RATE_CARD_Y + 4),
+         s(_RATE_CARD_X + _RATE_CARD_W), s(_RATE_CARD_Y + _RATE_CARD_H + 4)),
+        radius=s(_RATE_CARD_R),
+        fill=(0, 0, 0, int(0.10 * 255)),
+    )
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(12.5 * SS))
+    bg.alpha_composite(shadow_layer)
+
+    # --- 3. Белая карточка ---
+    card_rect = (
+        s(_RATE_CARD_X), s(_RATE_CARD_Y),
+        s(_RATE_CARD_X + _RATE_CARD_W) - 1, s(_RATE_CARD_Y + _RATE_CARD_H) - 1,
+    )
+    ImageDraw.Draw(bg).rounded_rectangle(card_rect, radius=s(_RATE_CARD_R),
+                                        fill=(255, 255, 255, 255))
+    img = bg
+    drw = ImageDraw.Draw(img)
+
+    # --- 4. Верхний ряд: бейдж base + тикер + сумма ---
+    BADGE_SIZE = 160
+    base_badge = _coin_badge_for(card.base, s(BADGE_SIZE))
+    img.alpha_composite(base_badge, (s(200), s(206)))
+
+    ticker_font = _font(s(90), weight="bold")
+    base_ticker = card.base.upper()
+    drw.text((s(400), s(217)), base_ticker, font=ticker_font, fill=_CONV_TEXT, anchor="lt")
+
+    base_amount_str = _fmt_card_amount(card.base_amount)
+    amount_font = _font(s(100), weight="bold")
+    drw.text((s(1400), s(213)), base_amount_str,
+             font=amount_font, fill=_CONV_TEXT, anchor="rt")
+
+    # --- 5. Разделители и центральный круг с иконкой ---
+    DIVIDER_Y = 500
+    DIVIDER_COLOR = _CONV_DIVIDER
+    drw.line([(s(200), s(DIVIDER_Y)), (s(704), s(DIVIDER_Y))],
+             fill=DIVIDER_COLOR, width=s(4))
+    drw.line([(s(896), s(DIVIDER_Y)), (s(1400), s(DIVIDER_Y))],
+             fill=DIVIDER_COLOR, width=s(4))
+
+    CIRCLE_SIZE = 132
+    circle_x = 800 - CIRCLE_SIZE // 2     # = 734
+    circle_y = DIVIDER_Y - CIRCLE_SIZE // 2  # = 434
+    drw.ellipse(
+        (s(circle_x), s(circle_y),
+         s(circle_x + CIRCLE_SIZE) - 1, s(circle_y + CIRCLE_SIZE) - 1),
+        fill=DIVIDER_COLOR,
+    )
+
+    # Иконка стрелок (↗ + ↙) внутри круга
+    arrow_size = 60
+    vw, vh = _SVG_CONV_ARROW_VIEWBOX
+    scale = s(arrow_size) / max(vw, vh)
+    arrow_x = s(circle_x + (CIRCLE_SIZE - arrow_size) / 2)
+    arrow_y = s(circle_y + (CIRCLE_SIZE - arrow_size) / 2)
+    _draw_svg_paths(
+        img, _SVG_CONV_ARROW_PATH,
+        fill=_CONV_ARROW_INK, alpha=int(0.7 * 255),
+        at=(arrow_x, arrow_y),
+        scale=scale,
+    )
+
+    # --- 6. Нижний ряд: бейдж quote + тикер + сумма ---
+    quote_badge = _coin_badge_for(card.quote, s(BADGE_SIZE))
+    img.alpha_composite(quote_badge, (s(200), s(634)))
+
+    quote_ticker = card.quote.upper()
+    drw.text((s(400), s(645)), quote_ticker, font=ticker_font, fill=_CONV_TEXT, anchor="lt")
+
+    quote_amount_str = _fmt_card_amount(card.quote_amount)
+    drw.text((s(1400), s(641)), quote_amount_str,
+             font=amount_font, fill=_CONV_TEXT, anchor="rt")
+
+    # --- 7. Downsample ---
+    if SS != 1:
+        img = img.resize((_RATE_W, _RATE_H), Image.LANCZOS)
+
+    out = io.BytesIO()
+    img.convert("RGB").save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def render_conversion_card_to_disk(card: ConversionCard) -> Path:
+    safe = card.cache_key().replace("|", "_").replace(".", "-")[:160]
+    path = Path("cards") / f"conv_{safe}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(render_conversion_card(card))
+    return path
