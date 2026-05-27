@@ -25,6 +25,10 @@ from fastapi.responses import HTMLResponse
 BASE_URL = os.getenv("CARD_BASE_URL", "https://imgyonagen.org").rstrip("/")
 STORAGE_DIR = Path(os.getenv("CARD_STORAGE_DIR", "/var/lib/moneybot-cards"))
 UPLOAD_TOKEN = os.getenv("CARD_UPLOAD_TOKEN", "").strip()  # если задан — требуем заголовок X-Upload-Token
+# Формат хранения и отдачи: webp (компактнее) или png (запасной).
+IMAGE_FORMAT = os.getenv("CARD_IMAGE_FORMAT", "webp").lower()
+if IMAGE_FORMAT not in ("webp", "png"):
+    IMAGE_FORMAT = "webp"
 
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -46,7 +50,22 @@ def _meta_path(card_id: str) -> Path:
 
 
 def _png_path(card_id: str) -> Path:
-    return STORAGE_DIR / f"{card_id}.png"
+    """Файл картинки. Расширение выбирается по IMAGE_FORMAT."""
+    return STORAGE_DIR / f"{card_id}.{IMAGE_FORMAT}"
+
+
+def _find_card_image(card_id: str) -> Path | None:
+    """Ищет файл карточки в любом из поддерживаемых форматов."""
+    for ext in ("webp", "png"):
+        p = STORAGE_DIR / f"{card_id}.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _media_type_for(path: Path) -> str:
+    ext = path.suffix.lstrip(".").lower()
+    return {"webp": "image/webp", "png": "image/png"}.get(ext, "application/octet-stream")
 
 
 def _save_meta(card_id: str, title: str, description: str) -> None:
@@ -107,17 +126,33 @@ async def upload_image(
         raise HTTPException(413, "image too large (max 5MB)")
 
     card_id = _new_id()
-    # На всякий случай — если коллизия, генерим заново
-    while _png_path(card_id).exists():
+    while _find_card_image(card_id) is not None:
         card_id = _new_id()
 
-    _png_path(card_id).write_bytes(data)
+    # Если включён WebP и пришёл PNG — конвертируем.
+    out_data = data
+    out_ext = "png" if image.content_type == "image/png" else "jpg"
+    if IMAGE_FORMAT == "webp":
+        try:
+            from io import BytesIO
+            from PIL import Image as PILImage
+            img = PILImage.open(BytesIO(data))
+            buf = BytesIO()
+            img.save(buf, format="WEBP", quality=88, method=6)
+            out_data = buf.getvalue()
+            out_ext = "webp"
+        except Exception:
+            # Если что-то пошло не так — оставляем как пришло (PNG/JPG)
+            pass
+
+    target_path = STORAGE_DIR / f"{card_id}.{out_ext}"
+    target_path.write_bytes(out_data)
     _save_meta(card_id, title, description)
 
     return {
         "id": card_id,
         "page_url": f"{BASE_URL}/c/{card_id}",
-        "image_url": f"{BASE_URL}/i/{card_id}.png",
+        "image_url": f"{BASE_URL}/i/{card_id}.{out_ext}",
     }
 
 
@@ -126,7 +161,9 @@ async def card_page(card_id: str) -> str:
     meta = _load_meta(card_id)
     if meta is None or not _png_path(card_id).exists():
         raise HTTPException(404, "card not found")
-    img_url = f"{BASE_URL}/i/{card_id}.png"
+    img_path = _find_card_image(card_id)
+    ext = img_path.suffix.lstrip(".") if img_path else IMAGE_FORMAT
+    img_url = f"{BASE_URL}/i/{card_id}.{ext}"
     # Минимально возможный HTML: только og:image и og:type=website.
     # Без og:title/description/site_name Telegram рендерит превью как чистую
     # медиа-карточку (как у CryptoBot), без хедера и заголовков.
@@ -146,18 +183,19 @@ async def card_page(card_id: str) -> str:
 
 @app.get("/i/{filename}")
 async def card_image(filename: str) -> Response:
-    # Принимаем только {id}.png — никаких path-traversal
-    if not filename.endswith(".png"):
+    # Принимаем {id}.webp или {id}.png
+    if "." not in filename:
         raise HTTPException(404)
-    card_id = filename[:-4]
-    if not card_id.isalnum() or len(card_id) > 32:
+    card_id, _, ext = filename.rpartition(".")
+    if ext not in ("webp", "png") or not card_id.isalnum() or len(card_id) > 32:
         raise HTTPException(404)
-    path = _png_path(card_id)
-    if not path.exists():
+    # Файл может лежать в другом формате — отдаём что есть.
+    path = _find_card_image(card_id)
+    if not path:
         raise HTTPException(404)
     return Response(
         content=path.read_bytes(),
-        media_type="image/png",
+        media_type=_media_type_for(path),
         headers={
             "Cache-Control": "public, max-age=31536000, immutable",
         },
@@ -166,15 +204,16 @@ async def card_image(filename: str) -> Response:
 
 @app.get("/health")
 async def health() -> dict:
-    pngs = list(STORAGE_DIR.glob("*.png"))
+    files = list(STORAGE_DIR.glob("*.webp")) + list(STORAGE_DIR.glob("*.png"))
     return {
         "status": "ok",
         "storage_dir": str(STORAGE_DIR),
-        "cards_on_disk": len(pngs),
+        "image_format": IMAGE_FORMAT,
+        "cards_on_disk": len(files),
     }
 
 
 @app.get("/_debug/keys")
 async def debug_keys() -> dict:
-    pngs = sorted(STORAGE_DIR.glob("*.png"))
-    return {"count": len(pngs), "ids": [p.stem for p in pngs[:50]]}
+    files = sorted(list(STORAGE_DIR.glob("*.webp")) + list(STORAGE_DIR.glob("*.png")))
+    return {"count": len(files), "ids": [p.stem for p in files[:50]]}

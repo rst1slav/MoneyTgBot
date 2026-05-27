@@ -28,7 +28,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "inline.share_profile": "Отправить свой профиль",
         "inline.share_profile_desc": "Текстовый профиль без фото",
         "inline.conversion_desc": "Конвертация с обновлением курса",
+        "inline.in_1_days": "за 1 день",
         "inline.in_7_days": "за 7 дней",
+        "inline.in_30_days": "за 30 дней",
         "inline.refresh_throttle": "Подожди немного",
 
         # Main menu
@@ -314,7 +316,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "inline.share_profile": "Share my profile",
         "inline.share_profile_desc": "Text profile without picture",
         "inline.conversion_desc": "Conversion with refresh button",
+        "inline.in_1_days": "in 1 day",
         "inline.in_7_days": "in 7 days",
+        "inline.in_30_days": "in 30 days",
         "inline.refresh_throttle": "Hold on a moment",
 
         "menu.add": "➕ Add operation",
@@ -590,7 +594,9 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "inline.share_profile": "Надіслати свій профіль",
         "inline.share_profile_desc": "Текстовий профіль без фото",
         "inline.conversion_desc": "Конвертація з оновленням курсу",
+        "inline.in_1_days": "за 1 день",
         "inline.in_7_days": "за 7 днів",
+        "inline.in_30_days": "за 30 днів",
         "inline.refresh_throttle": "Зачекай трохи",
 
         "menu.add": "➕ Додати операцію",

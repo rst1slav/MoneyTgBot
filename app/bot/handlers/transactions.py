@@ -119,6 +119,55 @@ _TON_PCT_TTL = 300
 _FX_REFRESH_COOLDOWN = 3.0
 _last_fx_refresh: dict[int, float] = {}
 
+# Sliding-window лимиты: не более N действий в окно WINDOW_SEC секунд на юзера.
+_RL_WINDOW_SEC = 60
+_RL_MAX_REFRESHES_PER_MIN = 10
+_RL_MAX_INLINE_PER_MIN = 10
+_rl_refresh_log: dict[int, list[float]] = {}
+_rl_inline_log: dict[int, list[float]] = {}
+
+
+def _rate_limit_check(uid: int, log: dict[int, list[float]], limit: int) -> bool:
+    """Sliding-window лимит. Возвращает True если можно делать действие."""
+    now = _time.time()
+    bucket = log.get(uid, [])
+    cutoff = now - _RL_WINDOW_SEC
+    bucket = [t for t in bucket if t > cutoff]
+    if len(bucket) >= limit:
+        log[uid] = bucket
+        return False
+    bucket.append(now)
+    log[uid] = bucket
+    return True
+
+
+# ----------- Метрики (просто пишем в JSONL, обработка позже) -----------
+import json as _json
+import os as _metrics_os
+from pathlib import Path as _MetricsPath
+from datetime import datetime as _MetricsDT
+
+_METRICS_DIR = _MetricsPath(_metrics_os.getenv("METRICS_DIR", "/var/log/moneybot"))
+try:
+    _METRICS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    _METRICS_DIR = _MetricsPath("./metrics")
+    try:
+        _METRICS_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _log_metric(filename: str, payload: dict) -> None:
+    """Аппендит JSON-строку в файл метрик. Тихо игнорирует ошибки."""
+    try:
+        payload = {"ts": _MetricsDT.utcnow().isoformat(), **payload}
+        path = _METRICS_DIR / filename
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
 
 async def _er_rates() -> dict | None:
     global _er_rates_cache
@@ -393,6 +442,61 @@ def _fmt_price_like_card(value: Decimal) -> str:
     return f"{sign}{float(abs_v):.2e}"
 
 
+def _is_numeric_token(t: str) -> bool:
+    """Токен похож на число: только цифры и сепараторы."""
+    if not t:
+        return False
+    return all(c.isdigit() or c in ".,'  " for c in t)
+
+
+def _normalize_amount_str(s: str) -> str:
+    """
+    Приводит строку к виду, который понимает Decimal.
+
+    Поддерживаемые форматы:
+      "999999999"      → "999999999"
+      "999 999 999"    → уже склеено в _parse_inline_query
+      "1,234,567.89"   → "1234567.89"  (US)
+      "1.234.567,89"   → "1234567.89"  (EU)
+      "1234567,89"     → "1234567.89"
+      "1,5"            → "1.5"         (decimal с запятой)
+      "1,234"          → "1234"        (3 цифры после запятой → тыс. разделитель)
+      "1.234"          → "1234"        (так же)
+    """
+    s = s.replace(" ", "").replace(" ", "").replace(" ", "").replace("'", "")
+    if not s:
+        return s
+    last_dot = s.rfind(".")
+    last_comma = s.rfind(",")
+    last_sep = max(last_dot, last_comma)
+    if last_sep == -1:
+        return s
+    seps_count = s.count(".") + s.count(",")
+    frac = s[last_sep + 1:]
+    # Если разделитель один и за ним ровно 3 цифры — это тысячный разделитель.
+    if seps_count == 1 and len(frac) == 3:
+        return s.replace(".", "").replace(",", "")
+    int_part = s[:last_sep].replace(".", "").replace(",", "")
+    return f"{int_part}.{frac}" if frac else int_part
+
+
+def _coalesce_numeric_prefix(parts: list[str]) -> list[str]:
+    """
+    Если первые N токенов выглядят числовыми — склеиваем в один.
+    "999 999 999 USD UAH" → "999999999 USD UAH"
+    """
+    n = 0
+    for p in parts:
+        if _is_numeric_token(p):
+            n += 1
+        else:
+            break
+    if n <= 1:
+        return parts
+    joined = "".join(parts[:n])
+    return [joined] + parts[n:]
+
+
 def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
     """
     Parses query into (amount, base, target_or_None).
@@ -401,15 +505,24 @@ def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
       <ccy> <ccy>              → 1, base, target
       <num> <ccy>              → num, base, no explicit target
       <num> <ccy> <ccy>        → num, base, target
+
+    Numeric formats accepted:
+      "999999999", "999 999 999", "1,234.56", "1.234,56", "1234,56", "1,5"
     """
     s = _preprocess_query(raw)
     parts = [p for p in s.upper().split() if p]
-    if not parts or len(parts) > 3:
+    if not parts:
         return None
+
+    # Склеиваем число с пробелами/разделителями, если оно идёт первым.
+    parts = _coalesce_numeric_prefix(parts)
+    if len(parts) > 3:
+        return None
+
     amount = Decimal("1")
-    first = parts[0].replace(",", ".")
+    first_normalized = _normalize_amount_str(parts[0])
     try:
-        amount = Decimal(first)
+        amount = Decimal(first_normalized)
         if amount <= 0:
             return None
         # Кап на сумму: если юзер ввёл > 19 девяток, клампим к максимуму
@@ -420,6 +533,7 @@ def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
         ccy_parts = parts[1:]
     except Exception:
         ccy_parts = parts
+
     if not ccy_parts or len(ccy_parts) > 2:
         return None
     base = _normalize_ccy(ccy_parts[0])
@@ -438,6 +552,7 @@ async def _build_conversion_text(
     *,
     default_target: str = "USD",
     lang: str = "ru",
+    period_days: int = 7,
 ) -> str | None:
     """
     Renders the inline-conversion message body. When `target` is None, falls back
@@ -474,7 +589,7 @@ async def _build_conversion_text(
     # - согласованности курса (rate) с тем что нарисовано
     # - расчёта % (только для amount=1)
     try:
-        history = await _fx_history(base, target, days=7)
+        history = await _fx_history(base, target, days=period_days)
     except Exception:
         history = []
     if history and len(history) >= 2:
@@ -519,7 +634,12 @@ async def _build_conversion_text(
         num = f"{abs(pct):.2f}"
         if "." in num:
             num = num.rstrip("0").rstrip(".")
-        period_label = _t("inline.in_7_days", lang)
+        period_label = _t(f"inline.in_{period_days}_days", lang)
+        if period_label == f"inline.in_{period_days}_days":
+            # Если такого ключа нет — фоллбэк-формат
+            period_label = (
+                f"in {period_days}d" if lang == "en" else f"за {period_days}д"
+            )
         pct_str = f" ({sign}{num}% {period_label})"
     else:
         pct_str = ""
@@ -530,29 +650,69 @@ async def _build_conversion_text(
     )
 
 
+# Допустимые таймфреймы для rate-карточки
+_TIMEFRAMES = (1, 7, 30)
+_DEFAULT_TIMEFRAME = 7
+
+
+def _tf_label(days: int, lang: str) -> str:
+    """Короткий лейбл для кнопки: '1д' / '7д' / '30д' (lang-aware)."""
+    if lang == "en":
+        return f"{days}d"
+    return f"{days}д"
+
+
 def _fx_refresh_keyboard(
-    amount: Decimal, base: str, target: str | None, lang: str = "ru"
+    amount: Decimal,
+    base: str,
+    target: str | None,
+    *,
+    lang: str = "ru",
+    period: int = _DEFAULT_TIMEFRAME,
+    show_timeframes: bool = True,
 ) -> InlineKeyboardMarkup:
+    """
+    Клавиатура под инлайн-сообщением:
+      [1д] [• 7д •] [30д]      <- только для rate-карточки (amount=1)
+      [Обновить курс]
+
+    Активный таймфрейм помечается точками по краям лейбла.
+    """
     from app.i18n import t as _t
 
     amt_str = format(amount.normalize(), "f")
     if amt_str.endswith("."):
         amt_str = amt_str[:-1]
     target_str = target or "-"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text=_t("inline.refresh", lang),
-                callback_data=f"fxupd:{amt_str}:{base}:{target_str}",
-            )
-        ]]
-    )
+
+    rows: list[list[InlineKeyboardButton]] = []
+
+    # Таймфреймы — только для курса (amount=1), не для конвертации
+    if show_timeframes and amount == Decimal("1"):
+        tf_row = []
+        for days in _TIMEFRAMES:
+            label = _tf_label(days, lang)
+            if days == period:
+                label = f"• {label} •"
+            tf_row.append(InlineKeyboardButton(
+                text=label,
+                callback_data=f"fxtf:{amt_str}:{base}:{target_str}:{days}",
+            ))
+        rows.append(tf_row)
+
+    # Кнопка обновления — несёт текущий период в callback_data
+    rows.append([
+        InlineKeyboardButton(
+            text=_t("inline.refresh", lang),
+            callback_data=f"fxupd:{amt_str}:{base}:{target_str}:{period}",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Cache: (base, target, lang) → (preview_url, ts).
-# preview_url — это публичная ссылка на нашу страницу с og:image (хостится на нашем веб-сервисе).
-# Telegram сам подтягивает превью из URL.
-_fx_chart_url_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
+# Cache: (base, target, lang, period_days) → (preview_url, ts).
+# Период включён в ключ — карточка с графиком за 1д/7д/30д кэшится отдельно.
+_fx_chart_url_cache: dict[tuple[str, str, str, int], tuple[str, float]] = {}
 # Cache for conversion cards: (amount_str, base, target, lang) → (url, ts).
 # Карточка-конвертация зависит и от суммы, поэтому ключ включает её.
 _conv_card_url_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
@@ -873,9 +1033,11 @@ _FX_INPROGRESS_TIMEOUT = 60  # auto-clear stale locks
 _fx_render_lock = asyncio.Lock()  # serialize matplotlib (not thread-safe)
 
 
-def _cached_fx_preview_url(base: str, target: str, lang: str) -> str | None:
-    """Возвращает закэшированный preview_url, если ещё свежий."""
-    key = (base, target, lang)
+def _cached_fx_preview_url(
+    base: str, target: str, lang: str, period_days: int = _DEFAULT_TIMEFRAME,
+) -> str | None:
+    """Возвращает закэшированный preview_url для пары+периода."""
+    key = (base, target, lang, period_days)
     cached = _fx_chart_url_cache.get(key)
     if cached and _time.time() - cached[1] < _FX_CHART_TTL:
         return cached[0]
@@ -910,24 +1072,24 @@ def _evenly_spaced_labels(
     return [_fmt_date_short(points[i][0], lang) for i in idxs]
 
 
-async def _build_and_cache_fx_chart(bot, base: str, target: str, lang: str) -> str | None:
+async def _build_and_cache_fx_chart(
+    bot, base: str, target: str, lang: str, period_days: int = _DEFAULT_TIMEFRAME,
+) -> str | None:
     """
-    Генерит rate-карточку для пары base/target, грузит её на наш веб-сервис
-    (через POST /upload) и возвращает page_url. Этот URL потом вставляется в
-    инлайн-сообщение, Telegram сам подтянет превью через og:image.
-
-    Только одна задача на (base, target, lang) рендерится за раз (60с stale-lock).
+    Генерит rate-карточку для пары base/target с указанным периодом графика
+    (1/7/30 дней), грузит на наш веб-сервис, возвращает image_url.
     """
-    key = (base, target, lang)
+    key = (base, target, lang, period_days)
     now = _time.time()
 
     in_prog_at = _fx_chart_in_progress.get(key)
     if in_prog_at and (now - in_prog_at) < _FX_INPROGRESS_TIMEOUT:
         return None
     _fx_chart_in_progress[key] = now
+    _render_start = _time.time()
 
     try:
-        prices = await _fx_history(base, target, days=7)
+        prices = await _fx_history(base, target, days=period_days)
         if not prices:
             # Final guaranteed fallback: build a flat 7-day series from the
             # current rate so we always have *something* to render.
@@ -988,9 +1150,17 @@ async def _build_and_cache_fx_chart(bot, base: str, target: str, lang: str) -> s
 
         _fx_chart_url_cache[key] = (page_url, _time.time())
         _log.info(
-            "FX chart cached for %s/%s (%d history points) → %s",
-            base, target, len(prices), page_url,
+            "FX chart cached for %s/%s [%dd] (%d history points) → %s",
+            base, target, period_days, len(prices), page_url,
         )
+        _log_metric("card_renders.jsonl", {
+            "type": "rate",
+            "base": base.upper(), "target": target.upper(), "lang": lang,
+            "period_days": period_days,
+            "render_ms": int((_time.time() - _render_start) * 1000),
+            "size_bytes": len(png_bytes),
+            "history_points": len(prices),
+        })
         return page_url
     except Exception as exc:
         _log.exception("FX chart build failed for %s/%s: %s", base, target, exc)
@@ -1028,6 +1198,7 @@ async def _build_and_cache_conv_card(
     тем, что бот пишет в тексте сообщения.
     """
     key = (_conv_amount_key(amount), base.upper(), target.upper(), lang)
+    _conv_start = _time.time()
     try:
         # Берём ту же историю что и rate-карточка → курс будет совпадать с текстом.
         prices = await _fx_history(base, target, days=7)
@@ -1085,6 +1256,13 @@ async def _build_and_cache_conv_card(
             return None
 
         _conv_card_url_cache[key] = (image_url, _time.time())
+        _log_metric("card_renders.jsonl", {
+            "type": "conversion",
+            "amount": str(amount),
+            "base": base.upper(), "target": target.upper(), "lang": lang,
+            "render_ms": int((_time.time() - _conv_start) * 1000),
+            "size_bytes": len(png_bytes),
+        })
         return image_url
     except Exception as exc:
         _log.exception("Conv card build failed: %s", exc)
@@ -1315,6 +1493,16 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
     raw = (inline_query.query or "").strip()
     uid = inline_query.from_user.id
     uname = inline_query.from_user.username
+
+    # Per-user rate limit: не более 10 инлайн-запросов в минуту.
+    if not _rate_limit_check(uid, _rl_inline_log, _RL_MAX_INLINE_PER_MIN):
+        # Возвращаем пустой ответ — Telegram покажет "ничего не найдено".
+        try:
+            await inline_query.answer([], cache_time=1, is_personal=True)
+        except Exception:
+            pass
+        return
+
     lang, default_ccy = await _user_lang_and_currency(uid)
 
     # Empty query: offer full text profile sharing.
@@ -1342,14 +1530,22 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
         return
     amount, base, target = parsed
 
+    _log_metric("inline_queries.jsonl", {
+        "uid": uid,
+        "raw": raw[:200],
+        "amount": str(amount), "base": base, "target": target,
+        "is_conversion": amount != Decimal("1"),
+    })
+
+    period = _DEFAULT_TIMEFRAME
     text = await _build_conversion_text(
         amount, base, target,
-        default_target=default_ccy, lang=lang,
+        default_target=default_ccy, lang=lang, period_days=period,
     )
     if not text:
         return
 
-    keyboard = _fx_refresh_keyboard(amount, base, target, lang=lang)
+    keyboard = _fx_refresh_keyboard(amount, base, target, lang=lang, period=period)
     effective_target = target or default_ccy
     title = f"{_fmt_main(amount)} {base} → {effective_target}"
 
@@ -1371,10 +1567,10 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
             except asyncio.TimeoutError:
                 chart_url = None
     else:
-        chart_url = _cached_fx_preview_url(base, effective_target, lang)
+        chart_url = _cached_fx_preview_url(base, effective_target, lang, period)
         if chart_url is None:
             bg_task = asyncio.create_task(_build_and_cache_fx_chart(
-                inline_query.bot, base, effective_target, lang,
+                inline_query.bot, base, effective_target, lang, period,
             ))
             try:
                 chart_url = await asyncio.wait_for(
@@ -1461,17 +1657,20 @@ async def _background_chart_refresh(
     text: str,
     keyboard: InlineKeyboardMarkup,
     old_url: str | None,
+    period: int = _DEFAULT_TIMEFRAME,
 ) -> None:
     """
     Запускается в фоне после edit_inline_message. Пересобирает нужный тип
-    карточки (rate или conversion в зависимости от amount) и, если URL
-    изменился, делает второй edit, чтобы Telegram подтянул новое превью.
+    карточки (rate или conversion) и, если URL изменился, делает второй edit,
+    чтобы Telegram подтянул новое превью.
     """
     try:
         if amount != Decimal("1"):
             new_url = await _build_and_cache_conv_card(bot, amount, base, target, lang)
         else:
-            new_url = await _build_and_cache_fx_chart(bot, base, target, lang)
+            new_url = await _build_and_cache_fx_chart(
+                bot, base, target, lang, period,
+            )
         if not new_url or new_url == old_url:
             return
         lpo = LinkPreviewOptions(
@@ -1482,7 +1681,7 @@ async def _background_chart_refresh(
         _log.warning("Background chart refresh failed: %s", exc)
 
 
-@router.callback_query(F.data.startswith("fxupd:"))
+@router.callback_query(F.data.regexp(r"^fx(upd|tf):"))
 async def fx_refresh_callback(callback: CallbackQuery) -> None:
     """
     Обновляет инлайн-сообщение с курсом.
@@ -1502,16 +1701,26 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
         except Exception:
             pass
 
-    # --- 1. Валидация callback ---
+    # --- 1. Валидация callback (формат: prefix:amt:base:target[:period]) ---
     if not callback.data or not callback.from_user:
         await _ack()
         return
-    parts = callback.data.split(":", 3)
-    if len(parts) != 4:
+    parts = callback.data.split(":")
+    if len(parts) < 4:
         await _ack()
         return
-    _, amt_str, base, target_str = parts
+    prefix = parts[0]                      # "fxupd" или "fxtf"
+    amt_str, base, target_str = parts[1], parts[2], parts[3]
     target = target_str if target_str != "-" else None
+    # Опциональный 5-й сегмент — период в днях.
+    period = _DEFAULT_TIMEFRAME
+    if len(parts) >= 5:
+        try:
+            period_candidate = int(parts[4])
+            if period_candidate in _TIMEFRAMES:
+                period = period_candidate
+        except ValueError:
+            pass
 
     uid = callback.from_user.id
     lang, default_ccy = await _user_lang_and_currency(uid)
@@ -1521,6 +1730,11 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     now = _time.time()
     last = _last_fx_refresh.get(uid, 0.0)
     if now - last < _FX_REFRESH_COOLDOWN:
+        await _ack()
+        return
+
+    # Sliding-window лимит: не более 10 обновлений в минуту.
+    if not _rate_limit_check(uid, _rl_refresh_log, _RL_MAX_REFRESHES_PER_MIN):
         await _ack()
         return
 
@@ -1556,12 +1770,14 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     # --- 5. Считаем новый текст ---
     text = await _build_conversion_text(
         amount, base, target,
-        default_target=default_ccy, lang=lang,
+        default_target=default_ccy, lang=lang, period_days=period,
     )
     if not text:
         return
 
-    keyboard = _fx_refresh_keyboard(amount, base, target, lang=lang)
+    keyboard = _fx_refresh_keyboard(
+        amount, base, target, lang=lang, period=period,
+    )
     bot = callback.bot
 
     # --- 6. Старый URL для превью (картинка остаётся пока рендерится новая) ---
@@ -1569,7 +1785,7 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     if is_conversion:
         old_url = _cached_conv_preview_url(amount, base, effective_target, lang)
     else:
-        old_url = _cached_fx_preview_url(base, effective_target, lang)
+        old_url = _cached_fx_preview_url(base, effective_target, lang, period)
 
     if old_url:
         link_preview = LinkPreviewOptions(
@@ -1582,6 +1798,8 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     await _edit_inline_message(bot, callback, text, keyboard, link_preview)
 
     # --- 8. Сбрасываем нужный URL-кэш и запускаем рендер в фоне ---
+    # При нажатии fxtf: (переключение таймфрейма) тоже сбрасываем — пересоберём
+    # с новым периодом. При fxupd: сбрасываем только текущий период.
     if is_conversion:
         amt_key = _conv_amount_key(amount)
         for key in list(_conv_card_url_cache.keys()):
@@ -1590,9 +1808,12 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
                 _conv_card_url_cache.pop(key, None)
     else:
         for key in list(_fx_chart_url_cache.keys()):
-            if key[0] == base.upper() and (target is None or key[1] == target.upper()):
+            if (key[0] == base.upper()
+                    and (target is None or key[1] == target.upper())
+                    and key[3] == period):
                 _fx_chart_url_cache.pop(key, None)
 
     asyncio.create_task(_background_chart_refresh(
-        bot, callback, amount, base, effective_target, lang, text, keyboard, old_url,
+        bot, callback, amount, base, effective_target, lang,
+        text, keyboard, old_url, period,
     ))
