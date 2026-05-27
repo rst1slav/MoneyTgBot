@@ -710,9 +710,10 @@ def _fx_refresh_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Cache: (base, target, lang, period_days) → (preview_url, ts).
-# Период включён в ключ — карточка с графиком за 1д/7д/30д кэшится отдельно.
-_fx_chart_url_cache: dict[tuple[str, str, str, int], tuple[str, float]] = {}
+# Cache: (base, target, lang, period_days, tz) → (preview_url, ts).
+# Период + таймзона включены в ключ — для 1-дневки tz влияет на лейблы.
+# Для 7/30 период не зависит от tz и tz="" в ключе.
+_fx_chart_url_cache: dict[tuple[str, str, str, int, str], tuple[str, float]] = {}
 # Cache for conversion cards: (amount_str, base, target, lang) → (url, ts).
 # Карточка-конвертация зависит и от суммы, поэтому ключ включает её.
 _conv_card_url_cache: dict[tuple[str, str, str, str], tuple[str, float]] = {}
@@ -1034,10 +1035,15 @@ _fx_render_lock = asyncio.Lock()  # serialize matplotlib (not thread-safe)
 
 
 def _cached_fx_preview_url(
-    base: str, target: str, lang: str, period_days: int = _DEFAULT_TIMEFRAME,
+    base: str,
+    target: str,
+    lang: str,
+    period_days: int = _DEFAULT_TIMEFRAME,
+    tz_name: str = "Europe/Kyiv",
 ) -> str | None:
-    """Возвращает закэшированный preview_url для пары+периода."""
-    key = (base, target, lang, period_days)
+    """Возвращает закэшированный preview_url для пары+периода (+tz для 1д)."""
+    tz_part = tz_name if period_days <= 1 else ""
+    key = (base, target, lang, period_days, tz_part)
     cached = _fx_chart_url_cache.get(key)
     if cached and _time.time() - cached[1] < _FX_CHART_TTL:
         return cached[0]
@@ -1060,26 +1066,65 @@ def _fmt_date_short(dt: datetime, lang: str) -> str:
     return f"{months[dt.month - 1]} {dt.day}"
 
 
+def _fmt_time_short(dt: datetime, tz_name: str | None) -> str:
+    """Формат '14:30' в указанной таймзоне. dt считается UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+        if tz_name:
+            return dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(
+                ZoneInfo(tz_name)
+            ).strftime("%H:%M")
+    except Exception:
+        pass
+    return dt.strftime("%H:%M")
+
+
 def _evenly_spaced_labels(
-    points: list[tuple[datetime, float]], lang: str, count: int = 4
+    points: list[tuple[datetime, float]],
+    lang: str,
+    count: int = 4,
+    *,
+    as_time: bool = False,
+    tz_name: str | None = None,
 ) -> list[str]:
+    """
+    Если as_time=True, формат '14:30' в TZ юзера (для 1-дневного графика).
+    Иначе — короткая дата в формате 'MAY 27' / 'МАЯ 27' и т.п.
+    """
     if not points:
         return []
+
+    def _fmt(dt: datetime) -> str:
+        if as_time:
+            return _fmt_time_short(dt, tz_name)
+        return _fmt_date_short(dt, lang)
+
     if len(points) <= count:
-        return [_fmt_date_short(dt, lang) for dt, _ in points]
+        return [_fmt(dt) for dt, _ in points]
     step = (len(points) - 1) / (count - 1)
     idxs = [int(round(i * step)) for i in range(count)]
-    return [_fmt_date_short(points[i][0], lang) for i in idxs]
+    return [_fmt(points[i][0]) for i in idxs]
 
 
 async def _build_and_cache_fx_chart(
-    bot, base: str, target: str, lang: str, period_days: int = _DEFAULT_TIMEFRAME,
+    bot,
+    base: str,
+    target: str,
+    lang: str,
+    period_days: int = _DEFAULT_TIMEFRAME,
+    tz_name: str = "Europe/Kyiv",
 ) -> str | None:
     """
     Генерит rate-карточку для пары base/target с указанным периодом графика
     (1/7/30 дней), грузит на наш веб-сервис, возвращает image_url.
+
+    Для 1-дневного графика лейблы показывают часы в таймзоне юзера.
+    Для остальных — короткие даты.
     """
-    key = (base, target, lang, period_days)
+    # Таймзону включаем в ключ кэша только когда она реально влияет на картинку
+    # (т.е. для 1-дневки). Для 7/30 ключ остаётся компактным.
+    tz_part = tz_name if period_days <= 1 else ""
+    key = (base, target, lang, period_days, tz_part)
     now = _time.time()
 
     in_prog_at = _fx_chart_in_progress.get(key)
@@ -1113,8 +1158,13 @@ async def _build_and_cache_fx_chart(
         current = ys[-1]
         first = ys[0]
         change_pct = ((current - first) / first * 100.0) if first > 0 else 0.0
-        # Card design uses English month abbreviations regardless of UI lang.
-        labels = _evenly_spaced_labels(prices, "en")
+        # Для 1-дневного графика — время в таймзоне юзера (HH:MM).
+        # Для остальных — короткие даты (англ. месяцы).
+        labels = _evenly_spaced_labels(
+            prices, "en",
+            as_time=(period_days <= 1),
+            tz_name=tz_name,
+        )
 
         card = RateCard(
             base=base,
@@ -1282,6 +1332,18 @@ async def _user_lang_and_currency(telegram_id: int) -> tuple[str, str]:
         )).scalar_one_or_none()
         ccy = row.value if row else "USD"
     return lang, ccy
+
+
+async def _user_timezone(telegram_id: int) -> str:
+    """Возвращает строку таймзоны из настроек юзера. Дефолт Europe/Kyiv."""
+    from app.db.models import User
+    from sqlalchemy import select
+
+    async with SessionLocal() as db:
+        tz = (await db.execute(
+            select(User.timezone).where(User.telegram_id == telegram_id).limit(1)
+        )).scalar_one_or_none()
+    return tz or "Europe/Kyiv"
 
 
 async def render_main_menu(
@@ -1567,10 +1629,13 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
             except asyncio.TimeoutError:
                 chart_url = None
     else:
-        chart_url = _cached_fx_preview_url(base, effective_target, lang, period)
+        tz_name = await _user_timezone(uid)
+        chart_url = _cached_fx_preview_url(
+            base, effective_target, lang, period, tz_name,
+        )
         if chart_url is None:
             bg_task = asyncio.create_task(_build_and_cache_fx_chart(
-                inline_query.bot, base, effective_target, lang, period,
+                inline_query.bot, base, effective_target, lang, period, tz_name,
             ))
             try:
                 chart_url = await asyncio.wait_for(
@@ -1658,6 +1723,7 @@ async def _background_chart_refresh(
     keyboard: InlineKeyboardMarkup,
     old_url: str | None,
     period: int = _DEFAULT_TIMEFRAME,
+    tz_name: str = "Europe/Kyiv",
 ) -> None:
     """
     Запускается в фоне после edit_inline_message. Пересобирает нужный тип
@@ -1669,7 +1735,7 @@ async def _background_chart_refresh(
             new_url = await _build_and_cache_conv_card(bot, amount, base, target, lang)
         else:
             new_url = await _build_and_cache_fx_chart(
-                bot, base, target, lang, period,
+                bot, base, target, lang, period, tz_name,
             )
         if not new_url or new_url == old_url:
             return
@@ -1784,8 +1850,12 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     is_conversion = amount != Decimal("1")
     if is_conversion:
         old_url = _cached_conv_preview_url(amount, base, effective_target, lang)
+        tz_name = "Europe/Kyiv"  # для конверсии tz не нужен
     else:
-        old_url = _cached_fx_preview_url(base, effective_target, lang, period)
+        tz_name = await _user_timezone(uid)
+        old_url = _cached_fx_preview_url(
+            base, effective_target, lang, period, tz_name,
+        )
 
     if old_url:
         link_preview = LinkPreviewOptions(
@@ -1815,5 +1885,5 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
 
     asyncio.create_task(_background_chart_refresh(
         bot, callback, amount, base, effective_target, lang,
-        text, keyboard, old_url, period,
+        text, keyboard, old_url, period, tz_name,
     ))
