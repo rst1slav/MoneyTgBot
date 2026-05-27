@@ -16,8 +16,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
-    InlineQueryResultCachedPhoto,
     InputTextMessageContent,
+    LinkPreviewOptions,
     Message,
 )
 from sqlalchemy import and_, select
@@ -490,8 +490,45 @@ def _fx_refresh_keyboard(
     )
 
 
-_fx_chart_file_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
+# Cache: (base, target, lang) → (preview_url, ts).
+# preview_url — это публичная ссылка на нашу страницу с og:image (хостится на нашем веб-сервисе).
+# Telegram сам подтягивает превью из URL.
+_fx_chart_url_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 _FX_CHART_TTL = 1800  # 30 min
+
+# Куда заливать сгенерированные PNG. Если пусто — фоллбэк на старый flow с storage chat.
+import os as _os
+_CARD_UPLOAD_URL = _os.getenv("CARD_UPLOAD_URL", "https://imgyonagen.org/upload").rstrip("/")
+_CARD_UPLOAD_TOKEN = _os.getenv("CARD_UPLOAD_TOKEN", "")
+
+
+async def _upload_card_to_web(
+    png_bytes: bytes,
+    title: str,
+    description: str = "",
+) -> str | None:
+    """
+    Загружает PNG на наш веб-сервис и возвращает page_url, который можно вставлять
+    в сообщения — Telegram сам подгрузит превью через og:image.
+    Возвращает None при ошибке.
+    """
+    if not _CARD_UPLOAD_URL:
+        return None
+    try:
+        files = {"image": ("card.png", png_bytes, "image/png")}
+        data = {"title": title, "description": description}
+        if _CARD_UPLOAD_TOKEN:
+            data["x_upload_token"] = _CARD_UPLOAD_TOKEN
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(_CARD_UPLOAD_URL, files=files, data=data)
+            r.raise_for_status()
+            payload = r.json()
+        page_url = payload.get("page_url")
+        if isinstance(page_url, str) and page_url.startswith("http"):
+            return page_url
+    except Exception as exc:
+        _log.warning("Card upload to web failed: %s", exc)
+    return None
 
 
 async def _fetch_ton_binance(days: int = 7) -> list[tuple[datetime, float]]:
@@ -773,13 +810,17 @@ _FX_INPROGRESS_TIMEOUT = 60  # auto-clear stale locks
 _fx_render_lock = asyncio.Lock()  # serialize matplotlib (not thread-safe)
 
 
-def _cached_fx_file_id(base: str, target: str, lang: str) -> str | None:
-    """Returns the cached file_id if fresh; never blocks or fetches."""
+def _cached_fx_preview_url(base: str, target: str, lang: str) -> str | None:
+    """Возвращает закэшированный preview_url, если ещё свежий."""
     key = (base, target, lang)
-    cached = _fx_chart_file_cache.get(key)
+    cached = _fx_chart_url_cache.get(key)
     if cached and _time.time() - cached[1] < _FX_CHART_TTL:
         return cached[0]
     return None
+
+
+# Старое имя — для совместимости с возможными внешними импортами. Можно удалить.
+_cached_fx_file_id = _cached_fx_preview_url
 
 
 _MONTHS_BY_LANG: dict[str, list[str]] = {
@@ -808,11 +849,11 @@ def _evenly_spaced_labels(
 
 async def _build_and_cache_fx_chart(bot, base: str, target: str, lang: str) -> str | None:
     """
-    Generates a rate-style card for `base/target`, uploads it to the storage
-    chat for an inline-mode file_id, then caches the file_id.
+    Генерит rate-карточку для пары base/target, грузит её на наш веб-сервис
+    (через POST /upload) и возвращает page_url. Этот URL потом вставляется в
+    инлайн-сообщение, Telegram сам подтянет превью через og:image.
 
-    Auto-fails fast — only one task per (base, target, lang) gets to render at
-    a time (60s stale-lock timeout).
+    Только одна задача на (base, target, lang) рендерится за раз (60с stale-lock).
     """
     key = (base, target, lang)
     now = _time.time()
@@ -866,21 +907,28 @@ async def _build_and_cache_fx_chart(bot, base: str, target: str, lang: str) -> s
                 _log.exception("FX chart render failed for %s/%s: %s", base, target, exc)
                 return None
 
-        storage_chat_id = get_settings().inline_storage_chat_id
+        # Заливаем PNG на наш веб-сервис.
         try:
-            msg = await bot.send_photo(
-                chat_id=storage_chat_id,
-                photo=FSInputFile(str(path)),
-            )
+            png_bytes = path.read_bytes()
         except Exception as exc:
-            _log.warning("FX chart upload to storage chat failed for %s/%s: %s", base, target, exc)
+            _log.warning("FX chart read failed for %s/%s: %s", base, target, exc)
             return None
 
-        file_id = msg.photo[-1].file_id if msg.photo else None
-        if file_id:
-            _fx_chart_file_cache[key] = (file_id, _time.time())
-            _log.info("FX chart cached for %s/%s (%d history points)", base, target, len(prices))
-        return file_id
+        title = f"{base.upper()}/{target.upper()} — {current:.4g}"
+        sign = "+" if change_pct >= 0 else "−"
+        description = f"{sign}{abs(change_pct):.2f}% за 7 дней"
+
+        page_url = await _upload_card_to_web(png_bytes, title=title, description=description)
+        if not page_url:
+            _log.warning("FX chart web upload failed for %s/%s", base, target)
+            return None
+
+        _fx_chart_url_cache[key] = (page_url, _time.time())
+        _log.info(
+            "FX chart cached for %s/%s (%d history points) → %s",
+            base, target, len(prices), page_url,
+        )
+        return page_url
     except Exception as exc:
         _log.exception("FX chart build failed for %s/%s: %s", base, target, exc)
         return None
@@ -1150,34 +1198,45 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
     effective_target = target or default_ccy
     title = f"{_fmt_main(amount)} {base} → {effective_target}"
 
-    # Try to deliver a chart on the FIRST query: wait up to 4s for background
-    # generation. If it completes in time → photo; if not → text article and
-    # the task keeps running so the next inline query gets the cached photo.
-    # `shield` prevents the wait_for timeout from cancelling the in-flight task.
-    chart_file_id = _cached_fx_file_id(base, effective_target, lang)
-    if chart_file_id is None:
+    # Пытаемся отдать карточку уже в первом ответе: ждём фоновую генерацию до 4с.
+    # Если успели — шлём текст + ссылку с превью (картинка появится над текстом
+    # благодаря og:image на нашей странице). Не успели — текст без превью,
+    # фоновая задача дорендерит, и следующий инлайн-запрос получит карточку.
+    chart_url = _cached_fx_preview_url(base, effective_target, lang)
+    if chart_url is None:
         bg_task = asyncio.create_task(_build_and_cache_fx_chart(
             inline_query.bot, base, effective_target, lang,
         ))
         try:
-            chart_file_id = await asyncio.wait_for(
+            chart_url = await asyncio.wait_for(
                 asyncio.shield(bg_task), timeout=4.0,
             )
         except asyncio.TimeoutError:
-            chart_file_id = None
+            chart_url = None
 
-    if chart_file_id:
-        # Photo captions are limited to 1024 chars — fits comfortably here.
-        result = InlineQueryResultCachedPhoto(
+    if chart_url:
+        # Текст + URL в конце. LinkPreviewOptions говорит Telegram'у:
+        # — какую ссылку использовать для превью,
+        # — показать его БОЛЬШИМ (картинка карточки)
+        # — и поверх текста, как у CryptoBot.
+        message_text = f"{text}\n\n{chart_url}"
+        result = InlineQueryResultArticle(
             id=str(uuid.uuid4()),
-            photo_file_id=chart_file_id,
             title=title,
             description=_t("inline.conversion_desc", lang),
-            caption=text,
-            parse_mode="HTML",
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode="HTML",
+                link_preview_options=LinkPreviewOptions(
+                    url=chart_url,
+                    prefer_large_media=True,
+                    show_above_text=True,
+                ),
+            ),
             reply_markup=keyboard,
         )
     else:
+        # Фоллбэк без карточки — обычный текст без превью.
         result = InlineQueryResultArticle(
             id=str(uuid.uuid4()),
             title=title,
@@ -1185,7 +1244,7 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
             input_message_content=InputTextMessageContent(
                 message_text=text,
                 parse_mode="HTML",
-                disable_web_page_preview=True,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
             ),
             reply_markup=keyboard,
         )
@@ -1243,11 +1302,11 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
         for key in list(_FIAT_HISTORY_CACHE.keys()):
             if key[0].upper() == upper:
                 _FIAT_HISTORY_CACHE.pop(key, None)
-    # Forget the rendered file_id for this pair so the next inline query
+    # Forget the rendered card URL for this pair so the next inline query
     # rebuilds the card with fresh numbers.
-    for key in list(_fx_chart_file_cache.keys()):
+    for key in list(_fx_chart_url_cache.keys()):
         if key[0] == base.upper() and (target is None or key[1] == target.upper()):
-            _fx_chart_file_cache.pop(key, None)
+            _fx_chart_url_cache.pop(key, None)
 
     lang, default_ccy = await _user_lang_and_currency(uid)
     text = await _build_conversion_text(
@@ -1261,57 +1320,55 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     _last_fx_refresh[uid] = now
     keyboard = _fx_refresh_keyboard(amount, base, target, lang=lang)
     bot = callback.bot
+    effective_target = target or default_ccy
 
-    async def _try_edit_caption() -> bool:
-        try:
-            if callback.inline_message_id:
-                await bot.edit_message_caption(
-                    inline_message_id=callback.inline_message_id,
-                    caption=text,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
-            elif callback.message:
-                await bot.edit_message_caption(
-                    chat_id=callback.message.chat.id,
-                    message_id=callback.message.message_id,
-                    caption=text,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
-            return True
-        except TelegramBadRequest:
-            return False
-        except Exception:
-            return False
+    # Свежий ре-рендер карточки. До 4с ждём — если успели, превью обновится с
+    # новой картинкой; если нет — оставляем только текст без превью.
+    chart_url: str | None = None
+    try:
+        chart_url = await asyncio.wait_for(
+            _build_and_cache_fx_chart(bot, base, effective_target, lang),
+            timeout=4.0,
+        )
+    except asyncio.TimeoutError:
+        chart_url = None
+    except Exception:
+        chart_url = None
 
-    async def _try_edit_text() -> bool:
+    if chart_url:
+        msg_text = f"{text}\n\n{chart_url}"
+        link_preview = LinkPreviewOptions(
+            url=chart_url,
+            prefer_large_media=True,
+            show_above_text=True,
+        )
+    else:
+        msg_text = text
+        link_preview = LinkPreviewOptions(is_disabled=True)
+
+    async def _do_edit() -> None:
         try:
             if callback.inline_message_id:
                 await bot.edit_message_text(
-                    text=text,
+                    text=msg_text,
                     inline_message_id=callback.inline_message_id,
                     parse_mode="HTML",
                     reply_markup=keyboard,
-                    disable_web_page_preview=True,
+                    link_preview_options=link_preview,
                 )
             elif callback.message:
                 await bot.edit_message_text(
-                    text=text,
+                    text=msg_text,
                     chat_id=callback.message.chat.id,
                     message_id=callback.message.message_id,
                     parse_mode="HTML",
                     reply_markup=keyboard,
-                    disable_web_page_preview=True,
+                    link_preview_options=link_preview,
                 )
-            return True
         except TelegramBadRequest:
-            return False
+            pass
         except Exception:
-            return False
+            pass
 
-    # Photo messages need edit_message_caption; plain text messages need
-    # edit_message_text. We don't know upfront which one was sent so try both.
-    if not await _try_edit_caption():
-        await _try_edit_text()
+    await _do_edit()
     await _silent_dismiss()

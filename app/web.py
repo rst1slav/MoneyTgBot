@@ -1,125 +1,183 @@
 """
-Веб-сервис для генерации карточек-превью в Telegram.
+Веб-сервис для хостинга карточек, которые Telegram подгружает как link-preview.
 
 Логика:
-  /card/{card_id}     → HTML с og:image, который Telegram парсит для превью
-  /card/{card_id}.png → сама картинка (рендерится из HTML через Playwright)
+  POST /upload (multipart image=<png>, title=..., description=...)
+        → сохраняет PNG на диск, возвращает {id, page_url, image_url}
+  GET  /c/{id}       → HTML-страница с og:image (Telegram парсит для превью)
+  GET  /i/{id}.png   → сама картинка
+  GET  /health       → диагностика
 
-Данные карточки временно хранятся в памяти. Позже заменим на БД.
+Хранилище — папка на диске (по умолчанию /var/lib/moneybot-cards).
+Карточки переживают рестарт сервиса.
 """
 
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
-from playwright.async_api import async_playwright
-from pydantic import BaseModel
-from typing import Dict
-import uuid
+from __future__ import annotations
+
 import os
+import secrets
+from pathlib import Path
 
-BASE_URL = os.getenv("CARD_BASE_URL", "https://imgyonagen.org")
-
-app = FastAPI(title="MoneyBot Card Preview")
-
-_cards: Dict[str, dict] = {}
-
-
-class CardData(BaseModel):
-    title: str
-    amount: str
-    currency: str
-    subtitle: str | None = None
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import HTMLResponse
 
 
-@app.post("/card")
-async def create_card(data: CardData) -> dict:
-    card_id = uuid.uuid4().hex[:12]
-    _cards[card_id] = data.model_dump()
+BASE_URL = os.getenv("CARD_BASE_URL", "https://imgyonagen.org").rstrip("/")
+STORAGE_DIR = Path(os.getenv("CARD_STORAGE_DIR", "/var/lib/moneybot-cards"))
+UPLOAD_TOKEN = os.getenv("CARD_UPLOAD_TOKEN", "").strip()  # если задан — требуем заголовок X-Upload-Token
+
+STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="MoneyBot Card Hosting")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _new_id() -> str:
+    """URL-безопасный 12-символьный id из латиницы+цифр."""
+    # token_urlsafe(9) даёт 12 символов после base64 → берём первые 12 и нормализуем
+    return secrets.token_urlsafe(9)[:12].replace("-", "x").replace("_", "y").lower()
+
+
+def _meta_path(card_id: str) -> Path:
+    return STORAGE_DIR / f"{card_id}.meta"
+
+
+def _png_path(card_id: str) -> Path:
+    return STORAGE_DIR / f"{card_id}.png"
+
+
+def _save_meta(card_id: str, title: str, description: str) -> None:
+    # Простой формат: первая строка — title, вторая — description
+    _meta_path(card_id).write_text(
+        f"{title}\n{description}\n",
+        encoding="utf-8",
+    )
+
+
+def _load_meta(card_id: str) -> tuple[str, str] | None:
+    path = _meta_path(card_id)
+    if not path.exists():
+        return None
+    parts = path.read_text(encoding="utf-8").split("\n")
+    title = parts[0] if parts else ""
+    description = parts[1] if len(parts) > 1 else ""
+    return title, description
+
+
+def _html_escape(s: str) -> str:
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', "&quot;")
+         .replace("'", "&#39;")
+    )
+
+
+def _check_token(token_header: str | None) -> None:
+    if UPLOAD_TOKEN and token_header != UPLOAD_TOKEN:
+        raise HTTPException(401, "invalid upload token")
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/upload")
+async def upload_image(
+    image: UploadFile = File(...),
+    title: str = Form("Money Bot"),
+    description: str = Form(""),
+    x_upload_token: str | None = None,
+) -> dict:
+    # FastAPI парсит заголовки через Header(...), но проще — взять из starlette напрямую
+    # Здесь токен передаём только через Form, чтобы не усложнять (можно не задавать вообще)
+    _check_token(x_upload_token)
+
+    if image.content_type not in ("image/png", "image/jpeg"):
+        raise HTTPException(415, "expected image/png or image/jpeg")
+
+    data = await image.read()
+    if not data:
+        raise HTTPException(400, "empty image")
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(413, "image too large (max 5MB)")
+
+    card_id = _new_id()
+    # На всякий случай — если коллизия, генерим заново
+    while _png_path(card_id).exists():
+        card_id = _new_id()
+
+    _png_path(card_id).write_bytes(data)
+    _save_meta(card_id, title, description)
+
     return {
         "id": card_id,
-        "url": f"{BASE_URL}/card/{card_id}",
-        "image_url": f"{BASE_URL}/img/{card_id}.png",
+        "page_url": f"{BASE_URL}/c/{card_id}",
+        "image_url": f"{BASE_URL}/i/{card_id}.png",
     }
 
 
-@app.get("/card/{card_id}", response_class=HTMLResponse)
+@app.get("/c/{card_id}", response_class=HTMLResponse)
 async def card_page(card_id: str) -> str:
-    if card_id not in _cards:
+    meta = _load_meta(card_id)
+    if meta is None or not _png_path(card_id).exists():
         raise HTTPException(404, "card not found")
-    data = _cards[card_id]
+    title, description = meta
+    img_url = f"{BASE_URL}/i/{card_id}.png"
+    t = _html_escape(title)
+    d = _html_escape(description)
     return f"""<!DOCTYPE html>
-<html><head>
+<html lang="en"><head>
 <meta charset="utf-8">
-<title>{data['title']}</title>
-<meta property="og:title" content="{data['title']}">
-<meta property="og:description" content="{data.get('subtitle') or ''}">
-<meta property="og:image" content="{BASE_URL}/img/{card_id}.png">
-<meta property="og:image:width" content="600">
-<meta property="og:image:height" content="400">
+<title>{t}</title>
+<meta property="og:title" content="{t}">
+<meta property="og:description" content="{d}">
+<meta property="og:image" content="{img_url}">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="1000">
 <meta property="og:type" content="website">
-</head><body>
-<h1>{data['title']}</h1>
-<p>{data['amount']} {data['currency']}</p>
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{img_url}">
+</head><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+<img src="{img_url}" style="max-width:100%;height:auto;" alt="{t}">
 </body></html>"""
 
 
-@app.get("/img/{card_id}.png")
-async def card_png(card_id: str) -> Response:
-    if card_id not in _cards:
-        raise HTTPException(404, "card not found")
-    data = _cards[card_id]
-    html = _render_card_html(data)
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--no-sandbox"])
-        page = await browser.new_page(viewport={"width": 600, "height": 400})
-        await page.set_content(html, wait_until="networkidle")
-        png = await page.screenshot(type="png", omit_background=False)
-        await browser.close()
-
+@app.get("/i/{filename}")
+async def card_image(filename: str) -> Response:
+    # Принимаем только {id}.png — никаких path-traversal
+    if not filename.endswith(".png"):
+        raise HTTPException(404)
+    card_id = filename[:-4]
+    if not card_id.isalnum() or len(card_id) > 32:
+        raise HTTPException(404)
+    path = _png_path(card_id)
+    if not path.exists():
+        raise HTTPException(404)
     return Response(
-        content=png,
+        content=path.read_bytes(),
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+        },
     )
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "cards_in_memory": len(_cards)}
+    pngs = list(STORAGE_DIR.glob("*.png"))
+    return {
+        "status": "ok",
+        "storage_dir": str(STORAGE_DIR),
+        "cards_on_disk": len(pngs),
+    }
 
 
 @app.get("/_debug/keys")
 async def debug_keys() -> dict:
-    return {"count": len(_cards), "keys": list(_cards.keys())}
-
-
-def _render_card_html(data: dict) -> str:
-    title = data["title"]
-    amount = data["amount"]
-    currency = data["currency"]
-    subtitle = data.get("subtitle") or ""
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{
-    width: 600px; height: 400px;
-    font-family: -apple-system, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
-    background: linear-gradient(135deg, #1e3a5f 0%, #2d5a8c 100%);
-    color: #fff;
-    display: flex; flex-direction: column;
-    padding: 40px;
-  }}
-  .title {{ font-size: 22px; opacity: 0.85; margin-bottom: 8px; }}
-  .subtitle {{ font-size: 16px; opacity: 0.6; margin-bottom: 40px; }}
-  .amount {{ font-size: 84px; font-weight: 700; line-height: 1; }}
-  .currency {{ font-size: 36px; opacity: 0.8; margin-top: 12px; }}
-  .footer {{ margin-top: auto; font-size: 14px; opacity: 0.5; }}
-</style></head>
-<body>
-  <div class="title">{title}</div>
-  <div class="subtitle">{subtitle}</div>
-  <div class="amount">{amount}</div>
-  <div class="currency">{currency}</div>
-  <div class="footer">via @YourBot</div>
-</body></html>"""
+    pngs = sorted(STORAGE_DIR.glob("*.png"))
+    return {"count": len(pngs), "ids": [p.stem for p in pngs[:50]]}
