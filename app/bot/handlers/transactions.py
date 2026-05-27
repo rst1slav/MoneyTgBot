@@ -406,16 +406,17 @@ def _parse_inline_query(raw: str) -> tuple[Decimal, str, str | None] | None:
     parts = [p for p in s.upper().split() if p]
     if not parts or len(parts) > 3:
         return None
-    # Лимит в 19 символов на любой токен — отсекает огромные числа типа 10^19,
-    # чтобы карточка не превращалась в кашу и арифметика не уходила в overflow.
-    if any(len(p) > 19 for p in parts):
-        return None
     amount = Decimal("1")
     first = parts[0].replace(",", ".")
     try:
         amount = Decimal(first)
         if amount <= 0:
             return None
+        # Кап на сумму: если юзер ввёл > 19 девяток, клампим к максимуму
+        # вместо полного отказа в инлайне. Так юзер хоть что-то увидит.
+        _MAX_AMOUNT = Decimal("9" * 19)  # = 9 999 999 999 999 999 999
+        if amount > _MAX_AMOUNT:
+            amount = _MAX_AMOUNT
         ccy_parts = parts[1:]
     except Exception:
         ccy_parts = parts
@@ -1021,14 +1022,14 @@ async def _build_and_cache_conv_card(
         # Берём ту же историю что и rate-карточка → курс будет совпадать с текстом.
         prices = await _fx_history(base, target, days=7)
         if prices and len(prices) >= 1:
-            current_rate = float(prices[-1][1])
+            current_rate = Decimal(str(prices[-1][1]))
         else:
             # Фоллбэк — живой курс
             base_usd = await _usd_rate_for(base)
             target_usd = await _usd_rate_for(target)
             if not base_usd or not target_usd or target_usd <= 0:
                 return None
-            current_rate = float(base_usd / target_usd)
+            current_rate = base_usd / target_usd
 
         if current_rate <= 0:
             return None
@@ -1037,13 +1038,17 @@ async def _build_and_cache_conv_card(
             ConversionCard, render_conversion_card_to_disk,
         )
 
-        base_amount_f = float(amount)
-        quote_amount_f = base_amount_f * current_rate
+        quote_amount = amount * current_rate
+        # Форматируем тем же helper'ом, что и в тексте — числа гарантированно
+        # совпадут с тем, что бот пишет в сообщении.
+        base_amount_str = _fmt_price_like_card(amount)
+        quote_amount_str = _fmt_price_like_card(quote_amount)
+
         card = ConversionCard(
             base=base.upper(),
             quote=target.upper(),
-            base_amount=base_amount_f,
-            quote_amount=quote_amount_f,
+            base_amount_str=base_amount_str,
+            quote_amount_str=quote_amount_str,
         )
 
         async with _fx_render_lock:
@@ -1060,7 +1065,7 @@ async def _build_and_cache_conv_card(
             return None
 
         title = f"{base.upper()} → {target.upper()}"
-        description = f"{base_amount_f} {base.upper()} = {quote_amount_f:.4g} {target.upper()}"
+        description = f"{base_amount_str} {base.upper()} = {quote_amount_str} {target.upper()}"
 
         image_url = await _upload_card_to_web(
             png_bytes, title=title, description=description,

@@ -1207,11 +1207,11 @@ _CONV_TEXT = (0, 0, 0)               # цифры и тикеры — черны
 class ConversionCard:
     base: str
     quote: str
-    base_amount: float
-    quote_amount: float
+    base_amount_str: str   # уже отформатированная строка, например "240" или "1 000 000"
+    quote_amount_str: str  # та же что бот пишет в текстовом сообщении
 
     def cache_key(self) -> str:
-        return f"conv|{self.base}|{self.quote}|{self.base_amount:.6f}|{self.quote_amount:.6f}"
+        return f"conv|{self.base}|{self.quote}|{self.base_amount_str}|{self.quote_amount_str}"
 
 
 def _fit_amount_font(
@@ -1313,7 +1313,7 @@ def render_conversion_card(card: ConversionCard) -> bytes:
     )
     base_ticker_right = ticker_bbox[2]
 
-    base_amount_str = _fmt_card_amount(card.base_amount)
+    base_amount_str = card.base_amount_str
     amount_font_base = _fit_amount_font(
         drw, base_amount_str,
         max_width=s(1400) - base_ticker_right - s(40),  # 40px зазор
@@ -1369,7 +1369,7 @@ def render_conversion_card(card: ConversionCard) -> bytes:
     )
     quote_ticker_right = quote_ticker_bbox[2]
 
-    quote_amount_str = _fmt_card_amount(card.quote_amount)
+    quote_amount_str = card.quote_amount_str
     amount_font_quote = _fit_amount_font(
         drw, quote_amount_str,
         max_width=s(1400) - quote_ticker_right - s(40),
