@@ -115,7 +115,8 @@ _ton_pct_cache: tuple[Decimal | None, float] | None = None
 _TON_PCT_TTL = 300
 
 # Inline refresh-button rate limit (per user).
-_FX_REFRESH_COOLDOWN = 60
+# Короткий — чтобы юзер не залипал, но защищает от спама.
+_FX_REFRESH_COOLDOWN = 3.0
 _last_fx_refresh: dict[int, float] = {}
 
 
@@ -1293,42 +1294,121 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
     await inline_query.answer([result], cache_time=1, is_personal=True)
 
 
+async def _edit_inline_message(
+    bot,
+    callback: CallbackQuery,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+    link_preview: LinkPreviewOptions,
+) -> bool:
+    """Безопасный edit, не падает на 'message is not modified' и пр. ошибках."""
+    try:
+        if callback.inline_message_id:
+            await bot.edit_message_text(
+                text=text,
+                inline_message_id=callback.inline_message_id,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                link_preview_options=link_preview,
+            )
+        elif callback.message:
+            await bot.edit_message_text(
+                text=text,
+                chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                link_preview_options=link_preview,
+            )
+        return True
+    except TelegramBadRequest:
+        return False
+    except Exception:
+        return False
+
+
+async def _background_chart_refresh(
+    bot,
+    callback: CallbackQuery,
+    base: str,
+    target: str,
+    lang: str,
+    text: str,
+    keyboard: InlineKeyboardMarkup,
+    old_url: str | None,
+) -> None:
+    """
+    Запускается в фоне после edit_inline_message. Пересобирает карточку и,
+    если URL изменился, делает второй edit, чтобы Telegram подтянул новое превью.
+    """
+    try:
+        new_url = await _build_and_cache_fx_chart(bot, base, target, lang)
+        if not new_url or new_url == old_url:
+            return
+        lpo = LinkPreviewOptions(
+            url=new_url, prefer_large_media=True, show_above_text=True,
+        )
+        await _edit_inline_message(bot, callback, text, keyboard, lpo)
+    except Exception as exc:
+        _log.warning("Background chart refresh failed: %s", exc)
+
+
 @router.callback_query(F.data.startswith("fxupd:"))
 async def fx_refresh_callback(callback: CallbackQuery) -> None:
-    """Silently refreshes the inline conversion message. Never shows popups/toasts."""
-    # Always dismiss the loading spinner without text.
-    async def _silent_dismiss() -> None:
+    """
+    Обновляет инлайн-сообщение с курсом.
+
+    UX-стратегия:
+    1. Сразу ack кнопку, чтоб спиннер не висел.
+    2. Сразу edit текста с СТАРОЙ картинкой превью — превью не пропадает,
+       цифры обновляются мгновенно.
+    3. В фоне дорисовываем новую карточку и, если URL изменился, делаем второй
+       edit. Пользователь видит обновление картинки через 1-3 секунды.
+    """
+    from app.i18n import t as _t
+
+    async def _ack(text: str | None = None) -> None:
         try:
-            await callback.answer()
+            await callback.answer(text=text, show_alert=False)
         except Exception:
             pass
 
+    # --- 1. Валидация callback ---
     if not callback.data or not callback.from_user:
-        await _silent_dismiss()
+        await _ack()
         return
     parts = callback.data.split(":", 3)
     if len(parts) != 4:
-        await _silent_dismiss()
+        await _ack()
         return
     _, amt_str, base, target_str = parts
     target = target_str if target_str != "-" else None
 
-    # Per-user rate limit (silent — no popup either way).
     uid = callback.from_user.id
+    lang, default_ccy = await _user_lang_and_currency(uid)
+    effective_target = target or default_ccy
+
+    # --- 2. Кулдаун с видимым сообщением ---
     now = _time.time()
     last = _last_fx_refresh.get(uid, 0.0)
     if now - last < _FX_REFRESH_COOLDOWN:
-        await _silent_dismiss()
+        await _ack(_t("inline.refresh_throttle", lang))
         return
 
     try:
         amount = Decimal(amt_str)
     except Exception:
-        await _silent_dismiss()
+        await _ack()
         return
 
-    # Refresh button must actually re-fetch — invalidate every cache that could
-    # otherwise serve a stale number.
+    _last_fx_refresh[uid] = now
+
+    # --- 3. Сразу ack (юзер видит реакцию) ---
+    await _ack()
+
+    # --- 4. Инвалидируем кэши, ВЛИЯЮЩИЕ НА ЦИФРЫ В ТЕКСТЕ ---
+    # URL-кэш не трогаем — старая картинка остаётся, и пока новый рендер
+    # бежит в фоне, превью не пропадает.
     global _er_rates_cache, _ton_pct_cache
     _er_rates_cache = None
     _ton_pct_cache = None
@@ -1337,85 +1417,41 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
             continue
         upper = sym.upper()
         _cg_rate_cache.pop(upper, None)
-        # Wipe history caches for this ticker so the chart redraws fresh.
         for key in list(_cg_history_cache.keys()):
             if key[0] == upper:
                 _cg_history_cache.pop(key, None)
         for key in list(_FIAT_HISTORY_CACHE.keys()):
             if key[0].upper() == upper:
                 _FIAT_HISTORY_CACHE.pop(key, None)
-    lang, default_ccy = await _user_lang_and_currency(uid)
+
+    # --- 5. Считаем новый текст ---
     text = await _build_conversion_text(
         amount, base, target,
         default_target=default_ccy, lang=lang,
     )
     if not text:
-        await _silent_dismiss()
         return
 
-    _last_fx_refresh[uid] = now
     keyboard = _fx_refresh_keyboard(amount, base, target, lang=lang)
     bot = callback.bot
-    effective_target = target or default_ccy
 
-    # Сохраняем старый URL ДО инвалидации кэша — будем использовать как фоллбэк,
-    # если новый рендер не успеет за таймаут.
+    # --- 6. Старый URL для превью (картинка остаётся пока рендерится новая) ---
     old_url = _cached_fx_preview_url(base, effective_target, lang)
+    if old_url:
+        link_preview = LinkPreviewOptions(
+            url=old_url, prefer_large_media=True, show_above_text=True,
+        )
+    else:
+        link_preview = LinkPreviewOptions(is_disabled=True)
 
-    # Инвалидируем кэш URL для пары — следующий инлайн-запрос пересоберёт картинку.
+    # --- 7. Мгновенный edit с новыми цифрами + старая картинка ---
+    await _edit_inline_message(bot, callback, text, keyboard, link_preview)
+
+    # --- 8. Сбрасываем URL-кэш ТЕПЕРЬ и запускаем рендер в фоне ---
     for key in list(_fx_chart_url_cache.keys()):
         if key[0] == base.upper() and (target is None or key[1] == target.upper()):
             _fx_chart_url_cache.pop(key, None)
 
-    # Пытаемся быстро (2с) получить свежий URL. Если не успели — оставляем старый,
-    # чтобы превью не пропало. Фоновая задача с длинным таймаутом всё равно
-    # отработает и закэширует новый URL к следующему refresh/инлайн-запросу.
-    new_url: str | None = None
-    rebuild_task = asyncio.create_task(_build_and_cache_fx_chart(
-        bot, base, effective_target, lang,
+    asyncio.create_task(_background_chart_refresh(
+        bot, callback, base, effective_target, lang, text, keyboard, old_url,
     ))
-    try:
-        new_url = await asyncio.wait_for(asyncio.shield(rebuild_task), timeout=2.0)
-    except asyncio.TimeoutError:
-        new_url = None
-    except Exception:
-        new_url = None
-
-    chart_url = new_url or old_url
-    if chart_url:
-        msg_text = text
-        link_preview = LinkPreviewOptions(
-            url=chart_url,
-            prefer_large_media=True,
-            show_above_text=True,
-        )
-    else:
-        msg_text = text
-        link_preview = LinkPreviewOptions(is_disabled=True)
-
-    async def _do_edit() -> None:
-        try:
-            if callback.inline_message_id:
-                await bot.edit_message_text(
-                    text=msg_text,
-                    inline_message_id=callback.inline_message_id,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                    link_preview_options=link_preview,
-                )
-            elif callback.message:
-                await bot.edit_message_text(
-                    text=msg_text,
-                    chat_id=callback.message.chat.id,
-                    message_id=callback.message.message_id,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                    link_preview_options=link_preview,
-                )
-        except TelegramBadRequest:
-            pass
-        except Exception:
-            pass
-
-    await _do_edit()
-    await _silent_dismiss()
