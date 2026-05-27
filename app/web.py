@@ -25,10 +25,11 @@ from fastapi.responses import HTMLResponse
 BASE_URL = os.getenv("CARD_BASE_URL", "https://imgyonagen.org").rstrip("/")
 STORAGE_DIR = Path(os.getenv("CARD_STORAGE_DIR", "/var/lib/moneybot-cards"))
 UPLOAD_TOKEN = os.getenv("CARD_UPLOAD_TOKEN", "").strip()  # если задан — требуем заголовок X-Upload-Token
-# Формат хранения и отдачи: webp (компактнее) или png (запасной).
-IMAGE_FORMAT = os.getenv("CARD_IMAGE_FORMAT", "webp").lower()
+# Формат хранения и отдачи: png по умолчанию (Telegram рендерит крупнее).
+# Можно переключить на webp через env CARD_IMAGE_FORMAT=webp.
+IMAGE_FORMAT = os.getenv("CARD_IMAGE_FORMAT", "png").lower()
 if IMAGE_FORMAT not in ("webp", "png"):
-    IMAGE_FORMAT = "webp"
+    IMAGE_FORMAT = "png"
 
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
