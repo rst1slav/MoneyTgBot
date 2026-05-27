@@ -37,7 +37,7 @@ async def create_card(data: CardData) -> dict:
     return {
         "id": card_id,
         "url": f"{BASE_URL}/card/{card_id}",
-        "image_url": f"{BASE_URL}/card/{card_id}.png",
+        "image_url": f"{BASE_URL}/img/{card_id}.png",
     }
 
 
@@ -52,7 +52,7 @@ async def card_page(card_id: str) -> str:
 <title>{data['title']}</title>
 <meta property="og:title" content="{data['title']}">
 <meta property="og:description" content="{data.get('subtitle') or ''}">
-<meta property="og:image" content="{BASE_URL}/card/{card_id}.png">
+<meta property="og:image" content="{BASE_URL}/img/{card_id}.png">
 <meta property="og:image:width" content="600">
 <meta property="og:image:height" content="400">
 <meta property="og:type" content="website">
@@ -62,7 +62,7 @@ async def card_page(card_id: str) -> str:
 </body></html>"""
 
 
-@app.get("/card/{card_id}.png")
+@app.get("/img/{card_id}.png")
 async def card_png(card_id: str) -> Response:
     if card_id not in _cards:
         raise HTTPException(404, "card not found")
