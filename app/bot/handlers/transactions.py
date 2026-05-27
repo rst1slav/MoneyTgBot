@@ -466,8 +466,8 @@ async def _build_conversion_text(
 
     # Single-line conversion — the "Also: …" alternates row was removed per feedback.
     return (
-        f"<b>{icon} {_fmt_main(amount)} {base} = "
-        f"{_fmt_main(target_amount)} {target}{pct_str}</b>"
+        f"{icon} {_fmt_main(amount)} {base} = "
+        f"{_fmt_main(target_amount)} {target}{pct_str}"
     )
 
 
