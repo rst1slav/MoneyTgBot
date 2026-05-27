@@ -1301,12 +1301,6 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
         for key in list(_FIAT_HISTORY_CACHE.keys()):
             if key[0].upper() == upper:
                 _FIAT_HISTORY_CACHE.pop(key, None)
-    # Forget the rendered card URL for this pair so the next inline query
-    # rebuilds the card with fresh numbers.
-    for key in list(_fx_chart_url_cache.keys()):
-        if key[0] == base.upper() and (target is None or key[1] == target.upper()):
-            _fx_chart_url_cache.pop(key, None)
-
     lang, default_ccy = await _user_lang_and_currency(uid)
     text = await _build_conversion_text(
         amount, base, target,
@@ -1321,21 +1315,31 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     bot = callback.bot
     effective_target = target or default_ccy
 
-    # Свежий ре-рендер карточки. До 4с ждём — если успели, превью обновится с
-    # новой картинкой; если нет — оставляем только текст без превью.
-    chart_url: str | None = None
-    try:
-        chart_url = await asyncio.wait_for(
-            _build_and_cache_fx_chart(bot, base, effective_target, lang),
-            timeout=4.0,
-        )
-    except asyncio.TimeoutError:
-        chart_url = None
-    except Exception:
-        chart_url = None
+    # Сохраняем старый URL ДО инвалидации кэша — будем использовать как фоллбэк,
+    # если новый рендер не успеет за таймаут.
+    old_url = _cached_fx_preview_url(base, effective_target, lang)
 
+    # Инвалидируем кэш URL для пары — следующий инлайн-запрос пересоберёт картинку.
+    for key in list(_fx_chart_url_cache.keys()):
+        if key[0] == base.upper() and (target is None or key[1] == target.upper()):
+            _fx_chart_url_cache.pop(key, None)
+
+    # Пытаемся быстро (2с) получить свежий URL. Если не успели — оставляем старый,
+    # чтобы превью не пропало. Фоновая задача с длинным таймаутом всё равно
+    # отработает и закэширует новый URL к следующему refresh/инлайн-запросу.
+    new_url: str | None = None
+    rebuild_task = asyncio.create_task(_build_and_cache_fx_chart(
+        bot, base, effective_target, lang,
+    ))
+    try:
+        new_url = await asyncio.wait_for(asyncio.shield(rebuild_task), timeout=2.0)
+    except asyncio.TimeoutError:
+        new_url = None
+    except Exception:
+        new_url = None
+
+    chart_url = new_url or old_url
     if chart_url:
-        # URL не в тексте — Telegram возьмёт его из link_preview_options.url
         msg_text = text
         link_preview = LinkPreviewOptions(
             url=chart_url,
