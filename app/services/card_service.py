@@ -1264,19 +1264,24 @@ def render_conversion_card(card: ConversionCard) -> bytes:
     img = bg
     drw = ImageDraw.Draw(img)
 
-    # --- 4. Верхний ряд: бейдж base + тикер + сумма ---
+    # --- 4. Верхний ряд: бейдж base + тикер + сумма (всё центрировано по Y бейджа) ---
     BADGE_SIZE = 160
+    base_badge_y = 206
+    base_center_y = base_badge_y + BADGE_SIZE // 2   # = 286
+
     base_badge = _coin_badge_for(card.base, s(BADGE_SIZE))
-    img.alpha_composite(base_badge, (s(200), s(206)))
+    img.alpha_composite(base_badge, (s(200), s(base_badge_y)))
 
     ticker_font = _font(s(90), weight="bold")
+    amount_font = _font(s(100), weight="bold")
+
     base_ticker = card.base.upper()
-    drw.text((s(400), s(217)), base_ticker, font=ticker_font, fill=_CONV_TEXT, anchor="lt")
+    drw.text((s(400), s(base_center_y)), base_ticker,
+             font=ticker_font, fill=_CONV_TEXT, anchor="lm")
 
     base_amount_str = _fmt_card_amount(card.base_amount)
-    amount_font = _font(s(100), weight="bold")
-    drw.text((s(1400), s(213)), base_amount_str,
-             font=amount_font, fill=_CONV_TEXT, anchor="rt")
+    drw.text((s(1400), s(base_center_y)), base_amount_str,
+             font=amount_font, fill=_CONV_TEXT, anchor="rm")
 
     # --- 5. Разделители и центральный круг с иконкой ---
     DIVIDER_Y = 500
@@ -1308,16 +1313,20 @@ def render_conversion_card(card: ConversionCard) -> bytes:
         scale=scale,
     )
 
-    # --- 6. Нижний ряд: бейдж quote + тикер + сумма ---
+    # --- 6. Нижний ряд: бейдж quote + тикер + сумма (всё центрировано по Y бейджа) ---
+    quote_badge_y = 634
+    quote_center_y = quote_badge_y + BADGE_SIZE // 2   # = 714
+
     quote_badge = _coin_badge_for(card.quote, s(BADGE_SIZE))
-    img.alpha_composite(quote_badge, (s(200), s(634)))
+    img.alpha_composite(quote_badge, (s(200), s(quote_badge_y)))
 
     quote_ticker = card.quote.upper()
-    drw.text((s(400), s(645)), quote_ticker, font=ticker_font, fill=_CONV_TEXT, anchor="lt")
+    drw.text((s(400), s(quote_center_y)), quote_ticker,
+             font=ticker_font, fill=_CONV_TEXT, anchor="lm")
 
     quote_amount_str = _fmt_card_amount(card.quote_amount)
-    drw.text((s(1400), s(641)), quote_amount_str,
-             font=amount_font, fill=_CONV_TEXT, anchor="rt")
+    drw.text((s(1400), s(quote_center_y)), quote_amount_str,
+             font=amount_font, fill=_CONV_TEXT, anchor="rm")
 
     # --- 7. Downsample ---
     if SS != 1:
