@@ -992,8 +992,12 @@ def render_rate_card(card: RateCard) -> bytes:
     img.alpha_composite(title_layer)
 
     # --- 6. "+ X%" right-aligned. Fire only when growth > 25%. ---
+    # Trailing zeros stripped: "8.00%" → "8%", "8.10%" → "8.1%".
     sign = "+ " if card.change_pct >= 0 else "- "
-    pct_text = f"{sign}{abs(card.change_pct):.2f}%"
+    _pct_num = f"{abs(card.change_pct):.2f}"
+    if "." in _pct_num:
+        _pct_num = _pct_num.rstrip("0").rstrip(".")
+    pct_text = f"{sign}{_pct_num}%"
     pct_font = _font(s(80), weight="bold")
     show_fire = card.change_pct > 25.0
     right_edge = s(1425)
@@ -1038,9 +1042,12 @@ def render_rate_card(card: RateCard) -> bytes:
         prefix_w = 0
 
     # The price number itself — adaptive format so micro-prices keep precision.
+    # Trailing zeros are stripped: "1.90" → "1.9", "1.00" → "1".
     price_font = _font(s(160), weight="bold")
     if abs(card.price) >= 1:
         price_str = f"{card.price:,.2f}"
+        if "." in price_str:
+            price_str = price_str.rstrip("0").rstrip(".")
     elif abs(card.price) >= 0.0001:
         price_str = f"{card.price:.4g}"      # e.g. "0.0003"
     else:

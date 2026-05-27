@@ -440,15 +440,35 @@ async def _build_conversion_text(
     target_amount = amount * rate
 
     pct: Decimal | None = None
-    base_past = await _historic_usd_rate(base, days_ago=7)
-    target_past = await _historic_usd_rate(target, days_ago=7)
-    if (
-        base_past is not None and target_past is not None
-        and base_past > 0 and target_past > 0
-    ):
-        past_rate = base_past / target_past
-        if past_rate > 0:
-            pct = (rate - past_rate) / past_rate * Decimal("100")
+
+    # 1) Основной путь — берём ту же 7-дневную историю, что использует карточка.
+    #    Так % в тексте и % на картинке гарантированно совпадают.
+    try:
+        history = await _fx_history(base, target, days=7)
+    except Exception:
+        history = []
+    if history and len(history) >= 2:
+        first_rate = history[0][1]
+        last_rate = history[-1][1]
+        if first_rate > 0:
+            pct = Decimal(str((last_rate - first_rate) / first_rate * 100.0))
+            # Используем последнюю точку истории как "текущий" курс — тоже для
+            # консистентности с тем, что нарисовано на карточке.
+            if last_rate > 0:
+                rate = Decimal(str(last_rate))
+                target_amount = amount * rate
+
+    # 2) Фоллбэки на старые источники, если истории нет.
+    if pct is None:
+        base_past = await _historic_usd_rate(base, days_ago=7)
+        target_past = await _historic_usd_rate(target, days_ago=7)
+        if (
+            base_past is not None and target_past is not None
+            and base_past > 0 and target_past > 0
+        ):
+            past_rate = base_past / target_past
+            if past_rate > 0:
+                pct = (rate - past_rate) / past_rate * Decimal("100")
     if pct is None and "TON" in {base, target}:
         ton_pct = await _ton_7d_pct()
         if ton_pct is not None:
@@ -459,12 +479,15 @@ async def _build_conversion_text(
 
     icon = "🟢" if (pct is None or pct >= 0) else "🔴"
     if pct is not None:
-        sign = "+" if pct >= 0 else ""
-        pct_str = f" ({sign}{int(round(pct))}%)"
+        # 2 знака после запятой, trailing zeros убраны: "8.00%" → "8%", "8.10%" → "8.1%"
+        sign = "+" if pct >= 0 else "−"
+        num = f"{abs(pct):.2f}"
+        if "." in num:
+            num = num.rstrip("0").rstrip(".")
+        pct_str = f" ({sign}{num}%)"
     else:
         pct_str = ""
 
-    # Single-line conversion — the "Also: …" alternates row was removed per feedback.
     return (
         f"{icon} {_fmt_main(amount)} {base} = "
         f"{_fmt_main(target_amount)} {target}{pct_str}"
