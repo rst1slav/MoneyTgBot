@@ -1388,11 +1388,11 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     lang, default_ccy = await _user_lang_and_currency(uid)
     effective_target = target or default_ccy
 
-    # --- 2. Кулдаун с видимым сообщением ---
+    # --- 2. Кулдаун (молча, без тоста) ---
     now = _time.time()
     last = _last_fx_refresh.get(uid, 0.0)
     if now - last < _FX_REFRESH_COOLDOWN:
-        await _ack(_t("inline.refresh_throttle", lang))
+        await _ack()
         return
 
     try:
