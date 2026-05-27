@@ -88,6 +88,11 @@ async def health() -> dict:
     return {"status": "ok", "cards_in_memory": len(_cards)}
 
 
+@app.get("/_debug/keys")
+async def debug_keys() -> dict:
+    return {"count": len(_cards), "keys": list(_cards.keys())}
+
+
 def _render_card_html(data: dict) -> str:
     title = data["title"]
     amount = data["amount"]
