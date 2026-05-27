@@ -464,10 +464,15 @@ async def _build_conversion_text(
     rate = base_usd / target_usd
     target_amount = amount * rate
 
+    # Конвертация конкретной суммы (не 1) → показываем просто результат без %
+    # и без эмодзи. Это согласуется с дизайном conv-карточки.
+    is_conversion = amount != Decimal("1")
+
     pct: Decimal | None = None
 
-    # 1) Основной путь — берём ту же 7-дневную историю, что использует карточка.
-    #    Так % в тексте и % на картинке гарантированно совпадают.
+    # Берём ту же 7-дневную историю, что использует карточка, для:
+    # - согласованности курса (rate) с тем что нарисовано
+    # - расчёта % (только для amount=1)
     try:
         history = await _fx_history(base, target, days=7)
     except Exception:
@@ -475,16 +480,14 @@ async def _build_conversion_text(
     if history and len(history) >= 2:
         first_rate = history[0][1]
         last_rate = history[-1][1]
-        if first_rate > 0:
+        if last_rate > 0:
+            rate = Decimal(str(last_rate))
+            target_amount = amount * rate
+        if not is_conversion and first_rate > 0:
             pct = Decimal(str((last_rate - first_rate) / first_rate * 100.0))
-            # Используем последнюю точку истории как "текущий" курс — тоже для
-            # консистентности с тем, что нарисовано на карточке.
-            if last_rate > 0:
-                rate = Decimal(str(last_rate))
-                target_amount = amount * rate
 
-    # 2) Фоллбэки на старые источники, если истории нет.
-    if pct is None:
+    # Фоллбэки для % если истории не было (только для amount=1)
+    if not is_conversion and pct is None:
         base_past = await _historic_usd_rate(base, days_ago=7)
         target_past = await _historic_usd_rate(target, days_ago=7)
         if (
@@ -494,17 +497,24 @@ async def _build_conversion_text(
             past_rate = base_past / target_past
             if past_rate > 0:
                 pct = (rate - past_rate) / past_rate * Decimal("100")
-    if pct is None and "TON" in {base, target}:
-        ton_pct = await _ton_7d_pct()
-        if ton_pct is not None:
-            if base == "TON" and target != "TON":
-                pct = ton_pct
-            elif target == "TON" and base != "TON":
-                pct = -ton_pct
+        if pct is None and "TON" in {base, target}:
+            ton_pct = await _ton_7d_pct()
+            if ton_pct is not None:
+                if base == "TON" and target != "TON":
+                    pct = ton_pct
+                elif target == "TON" and base != "TON":
+                    pct = -ton_pct
 
+    if is_conversion:
+        # Конверсия: просто "X BASE = Y TARGET"
+        return (
+            f"{_fmt_price_like_card(amount)} {base} = "
+            f"{_fmt_price_like_card(target_amount)} {target}"
+        )
+
+    # Курс пары: эмодзи + % за 7 дней
     icon = "🟢" if (pct is None or pct >= 0) else "🔴"
     if pct is not None:
-        # 2 знака после запятой, trailing zeros убраны: "8.00%" → "8%", "8.10%" → "8.1%"
         sign = "+" if pct >= 0 else "−"
         num = f"{abs(pct):.2f}"
         if "." in num:
