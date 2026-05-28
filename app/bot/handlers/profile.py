@@ -376,32 +376,34 @@ def _get_v5r1_code_cell():
 
 async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
     """
-    V5R1 (W5) деривация — получаем pub_key через tonsdk (он валидирует
-    TON-native seed, который у тебя и есть, раз V4R2 работает), затем зовём
-    pytoniq.WalletV5R1.from_data — она сама построит правильный data_cell с
-    учётом mainnet network_global_id=-239 и схемой wallet_id для W5.
+    V5R1 (W5) деривация. Полностью обходим pytoniq.from_data (он зовёт
+    провайдер) и строим state_init руками из публично доступных кусков:
+      • pub_key через tonsdk (т.к. TON-native seed)
+      • WALLET_V5_R1_CODE — модульная константа в pytoniq.contract.wallets.wallet_v5
+      • create_data_cell — статический метод на WalletV5R1, строит data cell
+        со всеми тонкостями (wallet_id, signature_allowed)
+      • StateInit из pytoniq_core.tlb.account собирает кодом + данными
+      • Хеш state_init → Address
 
-    provider=None допустим, т.к. для вычисления адреса сетевые вызовы не нужны.
+    Возвращаем UQ-формат (non-bounceable), как сохраняет Tonkeeper.
     """
     import logging
     log = logging.getLogger(__name__)
 
+    # 1. pub_key
     try:
         from tonsdk.crypto import mnemonic_to_wallet_key
-    except Exception:
-        return None
-
-    try:
-        pub_key, _priv_key = mnemonic_to_wallet_key(seed_words)
+        pub_key, _ = mnemonic_to_wallet_key(seed_words)
         if not (isinstance(pub_key, (bytes, bytearray)) and len(pub_key) == 32):
             return None
         pub_key = bytes(pub_key)
     except Exception as exc:
-        log.warning("tonsdk pub_key derivation failed: %s", exc)
+        log.warning("V5R1: tonsdk pub_key failed: %s", exc)
         return None
 
-    # Импортируем WalletV5R1
+    # 2. WALLET_V5_R1_CODE + WalletV5R1.create_data_cell
     WalletV5R1 = None
+    CODE = None
     for path in (
         "pytoniq.contract.wallets.wallet_v5",
         "pytoniq.contract.wallets.v5r1",
@@ -409,31 +411,62 @@ async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
         "pytoniq.contract.wallets",
     ):
         try:
-            m = __import__(path, fromlist=["WalletV5R1"])
-            cls = getattr(m, "WalletV5R1", None)
-            if cls is not None:
-                WalletV5R1 = cls
+            m = __import__(path, fromlist=["WalletV5R1", "WALLET_V5_R1_CODE"])
+            if hasattr(m, "WalletV5R1"):
+                WalletV5R1 = m.WalletV5R1
+            if hasattr(m, "WALLET_V5_R1_CODE"):
+                CODE = m.WALLET_V5_R1_CODE
+            if WalletV5R1 is not None and CODE is not None:
                 break
         except Exception:
             continue
-    if WalletV5R1 is None:
-        log.warning("WalletV5R1 not found in pytoniq")
+    if WalletV5R1 is None or CODE is None:
+        log.warning("V5R1: WalletV5R1/CODE not found in pytoniq")
         return None
 
+    # 3. data_cell через статический метод (он сам разбирается с wallet_id)
     try:
-        wallet = await WalletV5R1.from_data(
-            provider=None,
+        data_cell = WalletV5R1.create_data_cell(
             public_key=pub_key,
             wc=0,
-            network_global_id=-239,    # mainnet
+            network_global_id=-239,
             subwallet_number=0,
             is_signature_allowed=True,
         )
-        return wallet.address.to_str(
-            is_user_friendly=True, is_bounceable=True, is_url_safe=True,
+    except Exception as exc:
+        log.warning("V5R1: create_data_cell failed: %s", exc)
+        return None
+
+    # 4. StateInit → Address. Перебираем разные API.
+    try:
+        from pytoniq_core.tlb.account import StateInit
+        from pytoniq_core.boc.address import Address
+        st = StateInit(code=CODE, data=data_cell)
+        # Получаем хеш — у разных версий разный API
+        addr_hash = None
+        for getter in (
+            lambda: st.serialize().hash,
+            lambda: st.serialize().hash(),
+            lambda: st.cell.hash,
+            lambda: st.to_cell().hash,
+        ):
+            try:
+                v = getter()
+                if isinstance(v, (bytes, bytearray)):
+                    addr_hash = bytes(v)
+                    break
+            except Exception:
+                continue
+        if addr_hash is None:
+            log.warning("V5R1: cannot extract state_init hash")
+            return None
+        address = Address((0, addr_hash))
+        # UQ-формат (non-bounceable) — как у Tonkeeper по умолчанию
+        return address.to_str(
+            is_user_friendly=True, is_bounceable=False, is_url_safe=True,
         )
     except Exception as exc:
-        log.warning("V5R1 from_data failed: %s", exc)
+        log.warning("V5R1: StateInit/Address build failed: %s", exc)
         return None
 
 
