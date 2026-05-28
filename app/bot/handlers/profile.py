@@ -298,21 +298,38 @@ async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
     """
     V5R1 (W5) — текущая дефолтная версия Tonkeeper, MyTonWallet, Tonhub.
 
-    Используем pytoniq.contract.wallets.WalletV5R1 — она содержит точный код
-    контракта и storage layout. Provider=None не критичен, потому что для
-    вычисления адреса используется только локальная криптография (mnemonic →
-    pub_key → state_init hash).
+    Пробуем несколько путей импорта — у разных версий pytoniq разный layout.
     """
-    try:
-        from pytoniq.contract.wallets.wallet import WalletV5R1
-    except Exception:
+    import logging
+    log = logging.getLogger(__name__)
+
+    WalletV5R1 = None
+    for path in (
+        "pytoniq.contract.wallets.v5r1",
+        "pytoniq.contract.wallets.wallet_v5r1",
+        "pytoniq.contract.wallets.wallet",
+        "pytoniq.contract.wallets",
+        "pytoniq",
+    ):
+        try:
+            module = __import__(path, fromlist=["WalletV5R1"])
+            cls = getattr(module, "WalletV5R1", None)
+            if cls is not None:
+                WalletV5R1 = cls
+                break
+        except Exception:
+            continue
+    if WalletV5R1 is None:
+        log.warning("WalletV5R1 not found in pytoniq — install/upgrade pytoniq")
         return None
+
     try:
         wallet = await WalletV5R1.from_mnemonic(provider=None, mnemonics=seed_words)
         return wallet.address.to_str(
             is_user_friendly=True, is_bounceable=True, is_url_safe=True,
         )
-    except Exception:
+    except Exception as exc:
+        log.warning("V5R1 derivation failed: %s", exc)
         return None
 
 
