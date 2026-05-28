@@ -556,12 +556,25 @@ async def _pick_active_ton_address(candidates: list[str]) -> str | None:
 
 def _derive_ton_address(seed: str) -> str | None:
     """
-    Синхронный фоллбэк — возвращает только V4R2 адрес. Для async-контекста
-    используй await _derive_ton_addresses + _pick_active_ton_address.
+    Синхронная деривация дефолтного W5R1-адреса (как у Tonkeeper / @wallet).
+    Для свежесозданного кошелька он ещё не активирован — берём именно W5R1,
+    т.к. этот формат ожидают современные клиенты при первом импорте.
     """
     words = [w.strip().lower() for w in (seed or "").split() if w.strip()]
     if len(words) != 24:
         return None
+    try:
+        from tonutils.contracts.wallet.versions.v5 import WalletV5R1
+        from tonutils.clients import ToncenterClient
+        from ton_core.contrib.types import NetworkGlobalID
+        client = ToncenterClient(network=NetworkGlobalID.MAINNET)
+        wallet, _, _, _ = WalletV5R1.from_mnemonic(client, words, validate=False)
+        return wallet.address.to_str(
+            is_user_friendly=True, is_bounceable=False, is_url_safe=True,
+        )
+    except Exception:
+        pass
+    # Фоллбэк — V4R2 через tonsdk (если tonutils по какой-то причине не загрузился).
     try:
         from tonsdk.contract.wallet import Wallets, WalletVersionEnum
         _, _, _, wallet = Wallets.from_mnemonics(words, WalletVersionEnum.v4r2, 0)
