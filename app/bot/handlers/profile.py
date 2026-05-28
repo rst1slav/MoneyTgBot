@@ -376,14 +376,12 @@ def _get_v5r1_code_cell():
 
 async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
     """
-    V5R1 (W5) деривация — обходим валидацию pytoniq, получаем pub_key через
-    tonsdk и руками строим state_init с готовым code-cell от pytoniq.
+    V5R1 (W5) деривация — получаем pub_key через tonsdk (он валидирует
+    TON-native seed, который у тебя и есть, раз V4R2 работает), затем зовём
+    pytoniq.WalletV5R1.from_data — она сама построит правильный data_cell с
+    учётом mainnet network_global_id=-239 и схемой wallet_id для W5.
 
-    Шаги:
-      1. tonsdk → pub_key (32 байта)
-      2. pytoniq.WalletV5R1.code → code_cell
-      3. Строим data_cell (is_sig | seqno | wallet_id | pub_key | empty_extensions)
-      4. Строим state_init и берём его хеш как адрес
+    provider=None допустим, т.к. для вычисления адреса сетевые вызовы не нужны.
     """
     import logging
     log = logging.getLogger(__name__)
@@ -393,57 +391,49 @@ async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
     except Exception:
         return None
 
-    # 1. pub_key через tonsdk (та же либа, которая успешно делает V4R2)
     try:
         pub_key, _priv_key = mnemonic_to_wallet_key(seed_words)
         if not (isinstance(pub_key, (bytes, bytearray)) and len(pub_key) == 32):
-            log.warning("tonsdk pub_key invalid len/type: %s", type(pub_key))
             return None
         pub_key = bytes(pub_key)
     except Exception as exc:
         log.warning("tonsdk pub_key derivation failed: %s", exc)
         return None
 
-    # 2. Получаем code-cell из pytoniq.WalletV5R1
-    code_cell = _get_v5r1_code_cell()
-    if code_cell is None:
-        log.warning("V5R1 code cell not found in pytoniq — install/upgrade pytoniq")
+    # Импортируем WalletV5R1
+    WalletV5R1 = None
+    for path in (
+        "pytoniq.contract.wallets.wallet_v5",
+        "pytoniq.contract.wallets.v5r1",
+        "pytoniq.contract.wallets.wallet_v5r1",
+        "pytoniq.contract.wallets",
+    ):
+        try:
+            m = __import__(path, fromlist=["WalletV5R1"])
+            cls = getattr(m, "WalletV5R1", None)
+            if cls is not None:
+                WalletV5R1 = cls
+                break
+        except Exception:
+            continue
+    if WalletV5R1 is None:
+        log.warning("WalletV5R1 not found in pytoniq")
         return None
 
-    # 3-4. Строим state_init и адрес
     try:
-        from pytoniq_core import Address, begin_cell
-    except Exception:
-        return None
-    # wallet_id для mainnet workchain 0 в W5 — 0x7FFFFF11
-    WALLET_ID = 2147483409
-    try:
-        data_cell = (
-            begin_cell()
-            .store_bit(1)               # is_signature_allowed
-            .store_uint(0, 32)           # seqno
-            .store_uint(WALLET_ID, 32)   # wallet_id
-            .store_bytes(pub_key)        # 32 байта pub_key
-            .store_bit(0)                # extensions empty
-            .end_cell()
+        wallet = await WalletV5R1.from_data(
+            provider=None,
+            public_key=pub_key,
+            wc=0,
+            network_global_id=-239,    # mainnet
+            subwallet_number=0,
+            is_signature_allowed=True,
         )
-        state_init = (
-            begin_cell()
-            .store_uint(0, 2)            # no split_depth, no special
-            .store_bit(1).store_ref(code_cell)
-            .store_bit(1).store_ref(data_cell)
-            .store_bit(0)                # no library
-            .end_cell()
-        )
-        h = state_init.hash
-        if callable(h):
-            h = h()
-        address = Address((0, h))
-        return address.to_str(
+        return wallet.address.to_str(
             is_user_friendly=True, is_bounceable=True, is_url_safe=True,
         )
     except Exception as exc:
-        log.warning("V5R1 state_init build failed: %s", exc)
+        log.warning("V5R1 from_data failed: %s", exc)
         return None
 
 
