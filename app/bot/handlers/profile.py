@@ -301,6 +301,7 @@ def _get_v5r1_code_cell():
     содержит W5.
     """
     for path in (
+        "pytoniq.contract.wallets.wallet_v5",      # pytoniq 0.1.43
         "pytoniq.contract.wallets.v5r1",
         "pytoniq.contract.wallets.wallet_v5r1",
         "pytoniq.contract.wallets.wallet",
