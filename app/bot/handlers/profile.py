@@ -296,10 +296,15 @@ def _generate_seed_phrase(word_count: int = 24) -> str:
 
 def _get_v5r1_code_cell():
     """
-    Достаём готовый Cell кода контракта V5R1 из pytoniq, перебирая разные
-    layout'ы. Возвращаем (Cell, code_source) или (None, None) если pytoniq не
-    содержит W5.
+    Достаём Cell кода контракта V5R1 из pytoniq, перебирая разные
+    layout'ы и способы. Возвращаем Cell или None.
     """
+    from pytoniq_core import Cell
+    import inspect
+
+    # 1) Сначала ищем класс WalletV5R1
+    cls = None
+    src_module = None
     for path in (
         "pytoniq.contract.wallets.wallet_v5",      # pytoniq 0.1.43
         "pytoniq.contract.wallets.v5r1",
@@ -309,16 +314,63 @@ def _get_v5r1_code_cell():
         "pytoniq",
     ):
         try:
-            module = __import__(path, fromlist=["WalletV5R1"])
-            cls = getattr(module, "WalletV5R1", None)
-            if cls is None:
-                continue
-            # У pytoniq код может быть в .code или .CODE
-            code = getattr(cls, "code", None) or getattr(cls, "CODE", None)
-            if code is not None:
-                return code
+            m = __import__(path, fromlist=["WalletV5R1"])
+            if hasattr(m, "WalletV5R1"):
+                cls = m.WalletV5R1
+                src_module = m
+                break
         except Exception:
             continue
+    if cls is None:
+        return None
+
+    # 2) Пробуем разные атрибуты — может быть классовый Cell, может property
+    for attr in ("code", "CODE", "_code", "WALLET_V5_CODE", "WALLET_V5R1_CODE"):
+        val = getattr(cls, attr, None)
+        if isinstance(val, Cell):
+            return val
+        # property/method — вызываем без аргументов
+        if callable(val):
+            try:
+                r = val()
+                if isinstance(r, Cell):
+                    return r
+            except Exception:
+                pass
+
+    # 3) Ищем константу в модуле — Cell или hex/base64 строку с кодом
+    for name in dir(src_module):
+        try:
+            val = getattr(src_module, name)
+        except Exception:
+            continue
+        if isinstance(val, Cell):
+            return val
+        if isinstance(val, str) and (name.upper().startswith("WALLET") or "V5" in name.upper()):
+            try:
+                if val.startswith("b5ee9c") or val.startswith("B5EE9C"):
+                    return Cell.one_from_boc(bytes.fromhex(val))
+                # base64?
+                import base64
+                return Cell.one_from_boc(base64.b64decode(val))
+            except Exception:
+                continue
+
+    # 4) Парсим исходник класса — ищем .one_from_boc(...) вызов с константой
+    try:
+        src = inspect.getsource(cls)
+        import re
+        m = re.search(r"one_from_boc\(\s*['\"]([A-Za-z0-9+/=]+)['\"]", src)
+        if m:
+            raw = m.group(1)
+            try:
+                return Cell.one_from_boc(bytes.fromhex(raw))
+            except Exception:
+                import base64
+                return Cell.one_from_boc(base64.b64decode(raw))
+    except Exception:
+        pass
+
     return None
 
 
