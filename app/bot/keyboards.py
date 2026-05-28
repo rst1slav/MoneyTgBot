@@ -555,6 +555,9 @@ def crypto_deposit_keyboard(
     )
 
 
+SUPPORT_URL = "https://t.me/rst1k"
+
+
 def crypto_deposit_help_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     """Экран 'не пришёл депозит?': кнопки проверки и поддержки."""
     return InlineKeyboardMarkup(
@@ -565,7 +568,7 @@ def crypto_deposit_help_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             )],
             [InlineKeyboardButton(
                 text=t("crypto.deposit.support_btn", lang),
-                callback_data="crypto:dep_support",
+                url=SUPPORT_URL,
             )],
             [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:deposit")],
         ]

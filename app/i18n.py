@@ -241,8 +241,8 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
             "⚠️ Внимание! Пополняйте только монетами в сети <b>TON</b>. "
             "Если Вы используете другую сеть, Ваши монеты <b>будут потеряны</b>."
         ),
-        "crypto.deposit.show_qr": "📱 Показать QR-код",
-        "crypto.deposit.hide_qr": "🙈 Скрыть QR-код",
+        "crypto.deposit.show_qr": "Показать QR-код",
+        "crypto.deposit.hide_qr": "Скрыть QR-код",
         "crypto.deposit.no_payment": "Не пришел депозит?",
         "crypto.deposit.help_title": "Не пришел депозит?",
         "crypto.deposit.help_body": (
@@ -543,8 +543,8 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
             "⚠️ Warning! Only send coins on the <b>TON</b> network. "
             "If you use a different network, your coins <b>will be lost</b>."
         ),
-        "crypto.deposit.show_qr": "📱 Show QR code",
-        "crypto.deposit.hide_qr": "🙈 Hide QR code",
+        "crypto.deposit.show_qr": "Show QR code",
+        "crypto.deposit.hide_qr": "Hide QR code",
         "crypto.deposit.no_payment": "Deposit didn't arrive?",
         "crypto.deposit.help_title": "Deposit didn't arrive?",
         "crypto.deposit.help_body": (
@@ -844,8 +844,8 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
             "⚠️ Увага! Поповнюйте тільки монетами в мережі <b>TON</b>. "
             "Якщо ви використовуєте іншу мережу, ваші монети <b>буде втрачено</b>."
         ),
-        "crypto.deposit.show_qr": "📱 Показати QR-код",
-        "crypto.deposit.hide_qr": "🙈 Сховати QR-код",
+        "crypto.deposit.show_qr": "Показати QR-код",
+        "crypto.deposit.hide_qr": "Сховати QR-код",
         "crypto.deposit.no_payment": "Не прийшов депозит?",
         "crypto.deposit.help_title": "Не прийшов депозит?",
         "crypto.deposit.help_body": (

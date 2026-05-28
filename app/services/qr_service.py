@@ -36,62 +36,57 @@ def _rounded_corner_mask(size: tuple[int, int], radius: int) -> Image.Image:
     return mask
 
 
-def _draw_rocket_icon(size: int, color: tuple[int, int, int]) -> Image.Image:
+# Yona-logo SVG paths из Logo.svg (viewBox 1032x1242).
+# Большая молниеподобная фигура + маленький треугольник (вспышка).
+_YONA_BOLT: list[tuple[float, float]] = [
+    (-0.000157246, 407.685),
+    (245.972, 935.174),
+    (280.439, 1241.57),
+    (503.792, 1029.01),
+    (1031.28, 783.041),
+    (826.305, 343.466),
+    (515.641, 595.363),
+    (439.574, 202.708),
+]
+_YONA_TRI: list[tuple[float, float]] = [
+    (869.759, 115.51),
+    (549.471, 502.415),
+    (553.139, 0.0),
+]
+_YONA_VIEWBOX = (1032, 1242)
+
+
+def _draw_yona_logo(size: int, color: tuple[int, int, int]) -> Image.Image:
     """
-    Простая программная иконка ракеты в брендовом стиле.
-    Рисуется на прозрачном фоне. Размер — внутренний (без круглой плашки).
+    Рисует логотип Yona (молния + треугольник) из Logo.svg.
+    Логотип вписывается в квадрат `size × size` так, чтобы оба shape'а
+    влезли с небольшим отступом и были по центру.
     """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
-    s = size
-    cx = s / 2
+    vw, vh = _YONA_VIEWBOX
+    # Считаем bbox объединённых полигонов, чтоб фигуру правильно отцентровать.
+    all_pts = _YONA_BOLT + _YONA_TRI
+    min_x = min(x for x, _ in all_pts)
+    max_x = max(x for x, _ in all_pts)
+    min_y = min(y for _, y in all_pts)
+    max_y = max(y for _, y in all_pts)
+    bw = max_x - min_x
+    bh = max_y - min_y
 
-    # Корпус ракеты (вытянутый овал)
-    body_w = int(s * 0.34)
-    body_h = int(s * 0.62)
-    body_x0 = cx - body_w / 2
-    body_y0 = s * 0.12
-    d.rounded_rectangle(
-        (body_x0, body_y0, body_x0 + body_w, body_y0 + body_h),
-        radius=int(body_w * 0.45),
-        fill=color,
-    )
+    pad = size * 0.08
+    avail = size - 2 * pad
+    scale = avail / max(bw, bh)
+    # Центрирование bbox в квадрате
+    off_x = (size - bw * scale) / 2 - min_x * scale
+    off_y = (size - bh * scale) / 2 - min_y * scale
 
-    # Окошко иллюминатора
-    win_r = int(s * 0.07)
-    win_cy = body_y0 + body_h * 0.35
-    d.ellipse(
-        (cx - win_r, win_cy - win_r, cx + win_r, win_cy - win_r + win_r * 2),
-        fill=QR_BG_COLOR,
-    )
+    def _tx(poly):
+        return [(off_x + x * scale, off_y + y * scale) for x, y in poly]
 
-    # Крылья по бокам — треугольники
-    wing_top = body_y0 + body_h * 0.55
-    wing_bot = body_y0 + body_h + s * 0.04
-    wing_outer = s * 0.10
-    d.polygon([
-        (body_x0, wing_top),
-        (body_x0 - wing_outer, wing_bot),
-        (body_x0 + 2, wing_bot),
-    ], fill=color)
-    d.polygon([
-        (body_x0 + body_w, wing_top),
-        (body_x0 + body_w + wing_outer, wing_bot),
-        (body_x0 + body_w - 2, wing_bot),
-    ], fill=color)
-
-    # Огонь под ракетой — несколько каплевидных треугольников
-    flame_top = body_y0 + body_h
-    flame_bot = s * 0.96
-    flame_left = cx - body_w * 0.32
-    flame_right = cx + body_w * 0.32
-    d.polygon([
-        (flame_left, flame_top),
-        (cx, flame_bot),
-        (flame_right, flame_top),
-    ], fill=color)
-
+    d.polygon(_tx(_YONA_BOLT), fill=color)
+    d.polygon(_tx(_YONA_TRI), fill=color)
     return img
 
 
@@ -133,12 +128,12 @@ def render_wallet_qr(address: str, *, size: int = 800) -> bytes:
     bd.ellipse((0, 0, badge_d - 1, badge_d - 1), fill=QR_BG_COLOR)
     img.paste(badge, (bx, by), badge)
 
-    # Ракета внутри плашки (чуть меньше плашки)
-    icon_d = int(badge_d * 0.78)
-    rocket = _draw_rocket_icon(icon_d, QR_FG_COLOR)
-    rocket_x = (size - icon_d) // 2
-    rocket_y = (size - icon_d) // 2
-    img.paste(rocket, (rocket_x, rocket_y), rocket)
+    # Логотип Yona внутри плашки (чуть меньше плашки)
+    icon_d = int(badge_d * 0.74)
+    logo = _draw_yona_logo(icon_d, QR_FG_COLOR)
+    logo_x = (size - icon_d) // 2
+    logo_y = (size - icon_d) // 2
+    img.paste(logo, (logo_x, logo_y), logo)
 
     # --- Скруглённые уголки самой картинки ---
     # Добавим небольшую рамку (padding) и закруглим внешние углы.

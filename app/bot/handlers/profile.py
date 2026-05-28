@@ -2104,25 +2104,7 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         )
         return
 
-    if action == "dep_support":
-        async with SessionLocal() as db:
-            user = await ledger.ensure_user(db, uid, uname)
-            lang = getattr(user, "language", "ru") or "ru"
-        try:
-            # Открываем чат с поддержкой через URL — попап с подтверждением.
-            await callback.answer()
-        except TelegramBadRequest:
-            pass
-        # Простое сообщение со ссылкой; настоящий саппорт-username замени на свой
-        await bot.send_message(
-            chat_id=chat_id,
-            text=("Напишите в поддержку: @YonaSupport"
-                  if lang == "ru" else
-                  "Contact support: @YonaSupport"
-                  if lang == "en" else
-                  "Напишіть у підтримку: @YonaSupport"),
-        )
-        return
+    # Кнопка "Связаться с поддержкой" теперь URL-кнопка → callback не приходит.
 
     if action == "withdraw":
         async with SessionLocal() as db:
