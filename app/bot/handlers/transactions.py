@@ -772,6 +772,7 @@ async def _build_conversion_text(
     default_target: str = "USD",
     lang: str = "ru",
     period_days: int = 7,
+    prefetched_history: list[tuple[datetime, float]] | None = None,
 ) -> str | None:
     """
     Renders the inline-conversion message body. When `target` is None, falls back
@@ -807,10 +808,13 @@ async def _build_conversion_text(
     # Берём ту же 7-дневную историю, что использует карточка, для:
     # - согласованности курса (rate) с тем что нарисовано
     # - расчёта % (только для amount=1)
-    try:
-        history = await _fx_history(base, target, days=period_days)
-    except Exception:
-        history = []
+    if prefetched_history is not None:
+        history = prefetched_history
+    else:
+        try:
+            history = await _fx_history(base, target, days=period_days)
+        except Exception:
+            history = []
     if history and len(history) >= 2:
         first_rate = history[0][1]
         last_rate = history[-1][1]
@@ -1332,6 +1336,7 @@ async def _build_and_cache_fx_chart(
     lang: str,
     period_days: int = _DEFAULT_TIMEFRAME,
     tz_name: str = "Europe/Kyiv",
+    prefetched_prices: list[tuple[datetime, float]] | None = None,
 ) -> str | None:
     """
     Генерит rate-карточку для пары base/target с указанным периодом графика
@@ -1353,7 +1358,10 @@ async def _build_and_cache_fx_chart(
     _render_start = _time.time()
 
     try:
-        prices = await _fx_history(base, target, days=period_days)
+        if prefetched_prices is not None:
+            prices = prefetched_prices
+        else:
+            prices = await _fx_history(base, target, days=period_days)
         if not prices:
             # Final guaranteed fallback: build a flat 7-day series from the
             # current rate so we always have *something* to render.
@@ -1819,9 +1827,19 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
     })
 
     period = _DEFAULT_TIMEFRAME
+    effective_target_pre = target or default_ccy
+
+    # Берём историю один раз — текст и карточка должны строиться из одинаковых
+    # данных, чтобы числа гарантированно совпадали.
+    try:
+        shared_prices = await _fx_history(base, effective_target_pre, days=period)
+    except Exception:
+        shared_prices = []
+
     text = await _build_conversion_text(
         amount, base, target,
         default_target=default_ccy, lang=lang, period_days=period,
+        prefetched_history=shared_prices or None,
     )
     if not text:
         return
@@ -1855,6 +1873,7 @@ async def inline_query_handler(inline_query: InlineQuery) -> None:
         if chart_url is None:
             bg_task = asyncio.create_task(_build_and_cache_fx_chart(
                 inline_query.bot, base, effective_target, lang, period, tz_name,
+                prefetched_prices=shared_prices or None,
             ))
             try:
                 chart_url = await asyncio.wait_for(
@@ -1943,11 +1962,14 @@ async def _background_chart_refresh(
     old_url: str | None,
     period: int = _DEFAULT_TIMEFRAME,
     tz_name: str = "Europe/Kyiv",
+    prefetched_prices: list[tuple[datetime, float]] | None = None,
 ) -> None:
     """
     Запускается в фоне после edit_inline_message. Пересобирает нужный тип
     карточки (rate или conversion) и, если URL изменился, делает второй edit,
     чтобы Telegram подтянул новое превью.
+    Если передан prefetched_prices — карточка строится из тех же данных, что
+    и текст, без повторного обращения к API.
     """
     try:
         if amount != Decimal("1"):
@@ -1955,6 +1977,7 @@ async def _background_chart_refresh(
         else:
             new_url = await _build_and_cache_fx_chart(
                 bot, base, target, lang, period, tz_name,
+                prefetched_prices=prefetched_prices,
             )
         if not new_url or new_url == old_url:
             return
@@ -2052,10 +2075,16 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
             if key[0].upper() == upper:
                 _FIAT_HISTORY_CACHE.pop(key, None)
 
-    # --- 5. Считаем новый текст ---
+    # --- 5. Единый снимок истории для текста и карточки ---
+    try:
+        shared_prices = await _fx_history(base, effective_target, days=period)
+    except Exception:
+        shared_prices = []
+
     text = await _build_conversion_text(
         amount, base, target,
         default_target=default_ccy, lang=lang, period_days=period,
+        prefetched_history=shared_prices or None,
     )
     if not text:
         return
@@ -2105,4 +2134,5 @@ async def fx_refresh_callback(callback: CallbackQuery) -> None:
     asyncio.create_task(_background_chart_refresh(
         bot, callback, amount, base, effective_target, lang,
         text, keyboard, old_url, period, tz_name,
+        prefetched_prices=shared_prices or None,
     ))
