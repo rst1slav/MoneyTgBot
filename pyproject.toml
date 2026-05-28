@@ -23,6 +23,7 @@ dependencies = [
   "tonsdk>=1.0.15",
   "bip_utils>=2.12.1",
   "qrcode>=7.4.2",
+  "pytoniq-core>=0.1.36",
 ]
 
 [project.optional-dependencies]
