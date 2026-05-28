@@ -380,11 +380,50 @@ def _format_coin_amount(amount: Decimal) -> str:
 
 
 def _convert_usd(amount_usd: Decimal, base_ccy: str, uah_per_usd: Decimal | None) -> tuple[Decimal, str]:
-    """Convert USD value to user's base currency where supported, else fall back to USD."""
+    """Backwards-compatible: convert USD to UAH if available, else stays USD."""
     ccy = (base_ccy or "USD").upper()
     if ccy == "UAH" and uah_per_usd:
         return amount_usd * uah_per_usd, "UAH"
     return amount_usd, "USD"
+
+
+async def _get_base_per_usd(base_ccy: str) -> Decimal | None:
+    """Сколько единиц base_ccy за 1 USD. Использует тот же источник, что и инлайн-конвертер."""
+    ccy = (base_ccy or "USD").upper()
+    if ccy == "USD":
+        return Decimal("1")
+    # Импорт здесь чтобы не плодить циклы (transactions импортит profile тоже).
+    from app.bot.handlers.transactions import _usd_rate_for
+    try:
+        usd_per_ccy = await _usd_rate_for(ccy)
+    except Exception:
+        usd_per_ccy = None
+    if usd_per_ccy is None or usd_per_ccy <= 0:
+        return None
+    return Decimal("1") / Decimal(str(usd_per_ccy))
+
+
+# Знаки валют для коротких подписей в скобках балансов.
+_CCY_SYMBOL: dict[str, str] = {
+    "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥",
+    "UAH": "₴", "RUB": "₽", "BYN": "Br", "PLN": "zł", "UZS": "сум",
+    "KZT": "₸", "TRY": "₺", "TON": "TON",
+}
+
+
+def _convert_usd_to_base(
+    amount_usd: Decimal, base_ccy: str, base_per_usd: Decimal | None,
+) -> tuple[Decimal, str]:
+    """Конвертирует USD в base_ccy. При None курсе — фоллбэк в USD."""
+    if base_per_usd is None:
+        return amount_usd, "USD"
+    ccy = (base_ccy or "USD").upper()
+    return amount_usd * base_per_usd, ccy
+
+
+def _ccy_short(label: str) -> str:
+    """Короткий тег валюты для отображения в скобках: '$', '₴', 'EUR' и т.п."""
+    return _CCY_SYMBOL.get(label.upper(), label.upper())
 
 
 async def render_crypto_main(
@@ -402,10 +441,9 @@ async def render_crypto_main(
         lang = getattr(user, "language", "ru") or "ru"
         base_ccy = user.base_currency.value if user.base_currency else "USD"
         accounts = await ledger.get_active_accounts_by_type(db, user.id, AccountType.TON_WALLET)
-        try:
-            uah_per_usd = await fx_service.latest_uah_per_usd(db)
-        except Exception:
-            uah_per_usd = None
+
+    # Курс в базовую валюту юзера — для конвертации общих и поштучных сумм.
+    base_per_usd = await _get_base_per_usd(base_ccy)
 
     wallets = [(acc.id, _ton_display_label(acc)) for acc in accounts]
 
@@ -444,7 +482,15 @@ async def render_crypto_main(
             ton_bal, jets, ton_price = None, [], None
 
         ton_amount = ton_bal if ton_bal is not None else Decimal("0")
-        ton_usd = (ton_amount * ton_price) if (ton_price is not None) else None
+        # Если курс TON временно недоступен (API упал) — при нулевом балансе
+        # показываем 0, при ненулевом оставляем None, чтобы пользователь видел,
+        # что цена ещё не подгрузилась.
+        if ton_price is not None:
+            ton_usd = ton_amount * ton_price
+        elif ton_amount == 0:
+            ton_usd = Decimal("0")
+        else:
+            ton_usd = None
         coins.append({
             "symbol": "TON",
             "amount": ton_amount,
@@ -509,7 +555,9 @@ async def render_crypto_main(
         total_usd = sum(
             (c["usd_value"] for c in coins if c["usd_value"] is not None), Decimal("0")
         )
-        total_in_base, base_label = _convert_usd(total_usd, base_ccy, uah_per_usd)
+        total_in_base, base_label = _convert_usd_to_base(
+            total_usd, base_ccy, base_per_usd,
+        )
         lines.append(f"<b>= {total_in_base:.2f} {base_label}</b>")
         lines.append("")
 
@@ -524,7 +572,10 @@ async def render_crypto_main(
             amt_str = _format_coin_amount(c["amount"])
             line = f"🪙 {name_part}: {amt_str} {sym_escaped}"
             if c["usd_value"] is not None:
-                line += f" ({c['usd_value']:.2f}$)"
+                in_base, lbl = _convert_usd_to_base(
+                    c["usd_value"], base_ccy, base_per_usd,
+                )
+                line += f" ({in_base:.2f} {_ccy_short(lbl)})"
             lines.append(line)
     else:
         lines.append(t("profile.crypto.empty", lang))
