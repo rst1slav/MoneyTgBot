@@ -531,8 +531,8 @@ async def _derive_ton_addresses(seed: str) -> list[str]:
 async def _pick_active_ton_address(candidates: list[str]) -> str | None:
     """
     Из списка адресов-кандидатов выбирает тот, что реально существует на
-    блокчейне (имеет хоть что-то на счету или историю). Если ни один не
-    активен — возвращает первый (обычно V4R2).
+    блокчейне (active или balance > 0). Если ни один не активен — возвращает
+    None (вызывающий код должен предложить юзеру вставить адрес вручную).
     """
     if not candidates:
         return None
@@ -545,14 +545,13 @@ async def _pick_active_ton_address(candidates: list[str]) -> str | None:
                 r = await client.get(f"{base}/blockchain/accounts/{addr}")
                 if r.status_code == 200:
                     data = r.json()
-                    # Аккаунт считается активным, если status active или есть balance > 0
                     status = data.get("status", "")
                     bal = int(data.get("balance", 0))
                     if status == "active" or bal > 0:
                         return addr
             except Exception:
                 continue
-    return candidates[0]
+    return None
 
 
 def _derive_ton_address(seed: str) -> str | None:
@@ -2589,18 +2588,27 @@ async def profile_crypto_seed_input(message: Message) -> None:
             candidates = await _derive_ton_addresses(normalized)
             address = await _pick_active_ton_address(candidates)
             if not address:
-                # Stay in import mode; show "not found" + prompt again.
+                # Ни один кандидат не активен → удаляем сообщение с seed (она
+                # уже не нужна — мы не сохраним такую неточную привязку) и
+                # автоматически переключаем юзера в режим ввода адреса.
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                _pending_crypto_seed_only.discard(uid)
+                _pending_crypto_addr_only.add(uid)
                 err_text = (
-                    f"<b>{t('crypto.import.not_found', lang)}</b>\n\n"
-                    + t("crypto.import.subtitle", lang)
+                    f"<b>❌ {t('crypto.import.not_found', lang)}</b>\n\n"
+                    "Не удалось найти активный кошелёк автоматически.\n"
+                    "Пожалуйста, вставьте адрес кошелька (EQ... или UQ...) — "
+                    "скопируй его в Tonkeeper:"
                 )
-                back_target = "crypto:new_menu"
                 await push_text_panel(
                     bot=message.bot,
                     chat_id=message.chat.id,
                     user_id=uid,
                     text=err_text,
-                    reply_markup=crypto_import_prompt_keyboard(lang, back_to=back_target),
+                    reply_markup=crypto_import_prompt_keyboard(lang, back_to="crypto:new_menu"),
                     parse_mode="HTML",
                     disable_web_preview=True,
                 )
