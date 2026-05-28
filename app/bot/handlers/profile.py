@@ -293,33 +293,42 @@ def _generate_seed_phrase(word_count: int = 24) -> str:
         return Mnemonic("english").generate(strength=256)
 
 
-def _derive_ton_address(seed: str) -> str | None:
+def _derive_ton_addresses(seed: str) -> list[str]:
     """
-    Returns a v4r2 user-friendly bounceable address derived from `seed`.
-
-    Tries both supported mnemonic schemes:
-      1. TON-native 24-word mnemonic (Tonkeeper, Tonhub, @wallet, etc. — TON-specific
-         PBKDF2-with-leading-zero validation).
-      2. Standard BIP39 12/15/18/21/24-word mnemonic with BIP44 path m/44'/607'/0'
-         (used by Trust, MyTonWallet, some exchanges).
+    Возвращает СПИСОК адресов-кандидатов из одной seed-фразы, под разные
+    версии TON-кошельков: V3R2, V4R1, V4R2. (W5/V5 пока не поддерживается tonsdk.)
+    Дополнительно пытается BIP39-производный путь, если seed не TON-native.
+    Дубликаты убираются, порядок сохраняется.
     """
     import logging
     log = logging.getLogger(__name__)
     words = [w.strip().lower() for w in (seed or "").split() if w.strip()]
-    if len(words) == 0:
-        return None
+    if not words:
+        return []
 
-    # --- Path 1: TON-native mnemonic (24 words only) ---
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(addr: str | None) -> None:
+        if addr and addr not in seen:
+            out.append(addr)
+            seen.add(addr)
+
+    # TON-native mnemonic (24 слова) — пробуем несколько версий
     if len(words) == 24:
         try:
             from tonsdk.contract.wallet import Wallets, WalletVersionEnum
-            _, _, _, wallet = Wallets.from_mnemonics(words, WalletVersionEnum.v4r2, 0)
-            return wallet.address.to_string(True, True, True)
+            for ver in (WalletVersionEnum.v4r2, WalletVersionEnum.v3r2,
+                        WalletVersionEnum.v4r1):
+                try:
+                    _, _, _, wallet = Wallets.from_mnemonics(words, ver, 0)
+                    _add(wallet.address.to_string(True, True, True))
+                except Exception as exc:
+                    log.info("Derivation %s failed: %s", ver, exc)
         except Exception as exc:
-            log.info("TON-native mnemonic derivation failed: %s", exc)
-            # fall through to BIP39 attempt
+            log.info("tonsdk import failed: %s", exc)
 
-    # --- Path 2: BIP39 mnemonic ---
+    # BIP39 (12/15/18/21/24)
     if len(words) in {12, 15, 18, 21, 24}:
         try:
             from bip_utils import (
@@ -329,18 +338,51 @@ def _derive_ton_address(seed: str) -> str | None:
                 Bip44Coins,
             )
             phrase = " ".join(words)
-            if not Bip39MnemonicValidator().IsValid(phrase):
-                log.info("BIP39 validation failed")
-                return None
-            seed_bytes = Bip39SeedGenerator(phrase).Generate()
-            ton_acc = Bip44.FromSeed(seed_bytes, Bip44Coins.TON).DeriveDefaultPath()
-            return ton_acc.PublicKey().ToAddress()
+            if Bip39MnemonicValidator().IsValid(phrase):
+                seed_bytes = Bip39SeedGenerator(phrase).Generate()
+                ton_acc = Bip44.FromSeed(seed_bytes, Bip44Coins.TON).DeriveDefaultPath()
+                _add(ton_acc.PublicKey().ToAddress())
         except Exception as exc:
             log.info("BIP39→TON derivation failed: %s", exc)
-            return None
 
-    log.info("seed import rejected: word count=%d (need 12/15/18/21/24)", len(words))
-    return None
+    return out
+
+
+async def _pick_active_ton_address(candidates: list[str]) -> str | None:
+    """
+    Из списка адресов-кандидатов выбирает тот, что реально существует на
+    блокчейне (имеет хоть что-то на счету или историю). Если ни один не
+    активен — возвращает первый (обычно V4R2).
+    """
+    if not candidates:
+        return None
+    import httpx
+    from app.config import get_settings
+    base = get_settings().ton_api_url
+    async with httpx.AsyncClient(timeout=10) as client:
+        for addr in candidates:
+            try:
+                r = await client.get(f"{base}/blockchain/accounts/{addr}")
+                if r.status_code == 200:
+                    data = r.json()
+                    # Аккаунт считается активным, если status active или есть balance > 0
+                    status = data.get("status", "")
+                    bal = int(data.get("balance", 0))
+                    if status == "active" or bal > 0:
+                        return addr
+            except Exception:
+                continue
+    return candidates[0]
+
+
+def _derive_ton_address(seed: str) -> str | None:
+    """
+    Обратная совместимость со старым именем. Возвращает V4R2-адрес (первый
+    кандидат). Для синхронной валидации в местах, где нет access к async API.
+    Новый код должен использовать _derive_ton_addresses + _pick_active_ton_address.
+    """
+    candidates = _derive_ton_addresses(seed)
+    return candidates[0] if candidates else None
 
 
 async def _ensure_first_wallet(db, user_id: int) -> None:
@@ -2299,7 +2341,10 @@ async def profile_crypto_seed_input(message: Message) -> None:
         if uid in _pending_crypto_seed_only:
             # Normalize once so we store the same form we validated against.
             normalized = " ".join(w.strip().lower() for w in raw.split() if w.strip())
-            address = _derive_ton_address(normalized)
+            # Перебираем V3R2 / V4R1 / V4R2 / BIP39 и выбираем тот адрес, что
+            # реально существует на блокчейне (статус active или баланс > 0).
+            candidates = _derive_ton_addresses(normalized)
+            address = await _pick_active_ton_address(candidates)
             if not address:
                 # Stay in import mode; show "not found" + prompt again.
                 err_text = (
