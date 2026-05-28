@@ -593,7 +593,6 @@ def crypto_new_wallet_menu_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=t("crypto.new.create_btn", lang), callback_data="crypto:new_create")],
             [InlineKeyboardButton(text=t("crypto.new.import_btn", lang), callback_data="crypto:new_import")],
-            [InlineKeyboardButton(text=t("crypto.new.import_addr_btn", lang), callback_data="crypto:new_import_addr")],
             [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")],
         ]
     )
