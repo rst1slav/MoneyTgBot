@@ -22,8 +22,8 @@ from qrcode.image.styles.moduledrawers.pil import RoundedModuleDrawer
 from PIL import Image, ImageDraw, ImageFilter
 
 
-# Брендовый цвет TON — синий, как на референсе.
-QR_FG_COLOR = (0, 152, 234)        # #0098EA
+# Чёрный код и чёрный логотип на белом фоне.
+QR_FG_COLOR = (16, 12, 12)         # #100C0C — почти чёрный, как у Yona-градиента
 QR_BG_COLOR = (255, 255, 255)
 
 

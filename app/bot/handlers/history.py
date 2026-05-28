@@ -37,6 +37,39 @@ _user_history_page: dict[int, int] = {}
 _user_history_back: dict[int, str] = {}      # back-callback for current history view
 _user_history_locked: dict[int, bool] = {}   # whether source-filter row is hidden
 
+# Кэш URL pie-карточки: ключ — (user_id, дата, dep_rounded, wd_rounded). Один
+# раз в сутки на юзера + новая, если суммы заметно изменились.
+_pie_url_cache: dict[tuple[int, str, int, int], str] = {}
+
+
+async def _get_or_render_pie_url(
+    *, user_id: int, deposits_usd: Decimal, withdrawals_usd: Decimal,
+) -> str | None:
+    """Возвращает image_url pie-карточки, генерит и заливает если нет в кэше."""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    key = (
+        user_id, today,
+        int(round(float(deposits_usd))),
+        int(round(float(withdrawals_usd))),
+    )
+    cached = _pie_url_cache.get(key)
+    if cached:
+        return cached
+    try:
+        from app.services.inout_pie_service import render_inout_pie
+        from app.bot.handlers.transactions import _upload_card_to_web
+        png = render_inout_pie(deposits_usd, withdrawals_usd)
+        url = await _upload_card_to_web(
+            png, title="History — last 7 days",
+            description=f"Deposits vs Withdrawals",
+        )
+        if url:
+            _pie_url_cache[key] = url
+        return url
+    except Exception:
+        return None
+
 
 def _parse_history_filters(text: str) -> HistoryFilters:
     filters = HistoryFilters()
@@ -64,37 +97,66 @@ def _parse_history_filters(text: str) -> HistoryFilters:
 _DESC_MAX = 30  # truncate transaction descriptions for compactness
 
 
-def _history_body(txs: list[Transaction], lang: str = "ru") -> str:
-    """
-    Single-line format per transaction (category lives on the pie chart):
-      🟢 09.05.26 14:30 | 100.00 UAH | Magnit
-      🔴 09.05.26 12:15 | 50.00 UAH | Old Town
+def _fmt_tx_amount(amount: Decimal) -> str:
+    """1234.56 → '1 234.56', 6.7 → '6.7', 1.00 → '1' (без хвостовых нулей)."""
+    sign = "-" if amount < 0 else ""
+    abs_v = abs(amount)
+    if abs_v >= 1:
+        s = f"{abs_v:,.2f}".replace(",", " ")
+        if "." in s:
+            s = s.rstrip("0").rstrip(".")
+        return f"{sign}{s}"
+    # Меньше 1 — оставим до 6 знаков с обрезкой.
+    s = f"{abs_v:.6f}".rstrip("0").rstrip(".")
+    return f"{sign}{s or '0'}"
 
-    Crypto rows (TON, jettons) drop the trailing description and use an em-dash:
-      🟢 09.05.26 14:30 — 0.5 TON
+
+def _history_body(
+    txs: list[Transaction], lang: str = "ru",
+    *,
+    header: str | None = None,
+) -> str:
     """
+    Новый формат — транзакции группируются по дню. Заголовок (с %депозитов /
+    %выводов / суммами) приходит снаружи и приклеивается сверху.
+
+    Пример вывода:
+        За последние 7 дней:
+        • Депозиты (65.7%): 3 948.95 USD
+        • Выводы (34.3%): 3 948.95 USD
+
+        18.05.26
+        16:16: +6.7 TON
+        14:30: −12 USDT
+
+        17.05.26
+        21:00: +100 UAH
+    """
+    out: list[str] = []
+    if header:
+        out.append(header)
+
     if not txs:
-        return t("history.empty", lang)
-    rows = []
-    for tx in txs:
-        icon = '🟢' if tx.tx_type.value == 'income' else '🔴'
-        is_crypto = tx.currency == Currency.TON
-        precision = 4 if is_crypto else 2
-        amount_str = f"{tx.amount:.{precision}f}"
-        date_str = tx.created_at.strftime("%d.%m.%y %H:%M")
-        currency = tx.currency.value
+        if not header:
+            return t("history.empty", lang)
+        out.append("")
+        out.append(t("history.empty", lang))
+        return "\n".join(out)
 
-        if is_crypto:
-            line = f"{icon} {date_str} — {amount_str} {currency}"
-        else:
-            line = f"{icon} {date_str} | {amount_str} {currency}"
-            if tx.description:
-                desc = tx.description.strip()
-                if len(desc) > _DESC_MAX:
-                    desc = desc[: _DESC_MAX - 1] + "…"
-                line = f"{line} | {desc}"
-        rows.append(line)
-    return "\n".join(rows)
+    current_day: str | None = None
+    for tx in txs:
+        day = tx.created_at.strftime("%d.%m.%y")
+        time = tx.created_at.strftime("%H:%M")
+        sign = "+" if tx.tx_type.value == "income" else "−"
+        amount_str = _fmt_tx_amount(tx.amount)
+        currency = tx.currency.value
+        if day != current_day:
+            if current_day is not None:
+                out.append("")
+            out.append(day)
+            current_day = day
+        out.append(f"{time}: {sign}{amount_str} {currency}")
+    return "\n".join(out)
 
 
 async def render_history(
@@ -165,18 +227,44 @@ async def render_history(
         except Exception:
             total_count = page * PER_PAGE + (1 if has_next else 0)
         total_pages = max(1, (total_count + PER_PAGE - 1) // PER_PAGE)
-        chart_path = None
+        # Weekly stats — одни и те же для всех фильтров. Конвертация в базовую
+        # валюту юзера (UAH/USD/RUB/EUR/...).
         try:
-            chart_path = await report_service.generate_history_pie_chart(
-                db, user.id,
-                tx_type=filters.tx_type,
-                account_type=filters.account_type,
-                account_id=filters.account_id,
-            )
+            dep_usd, wd_usd = await history_service.weekly_inout_stats_usd(db, user.id)
         except Exception:
-            chart_path = None
+            dep_usd, wd_usd = Decimal("0"), Decimal("0")
+        base_ccy = user.base_currency.value if user.base_currency else "USD"
 
-    body = _history_body(txs, lang)
+    # Конвертация в базовую валюту юзера (через тот же helper что в profile)
+    from app.bot.handlers.profile import _get_base_per_usd, _convert_usd_to_base
+    base_per_usd = await _get_base_per_usd(base_ccy)
+    dep_in_base, base_label = _convert_usd_to_base(dep_usd, base_ccy, base_per_usd)
+    wd_in_base, _ = _convert_usd_to_base(wd_usd, base_ccy, base_per_usd)
+
+    total = dep_usd + wd_usd
+    dep_pct = (float(dep_usd) / float(total) * 100) if total > 0 else 0.0
+    wd_pct = (float(wd_usd) / float(total) * 100) if total > 0 else 0.0
+
+    if lang == "en":
+        header = (
+            "For the last 7 days:\n"
+            f"• Deposits ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
+            f"• Withdrawals ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
+        )
+    elif lang == "uk":
+        header = (
+            "За останні 7 днів:\n"
+            f"• Депозити ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
+            f"• Виводи ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
+        )
+    else:
+        header = (
+            "За последние 7 дней:\n"
+            f"• Депозиты ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
+            f"• Выводы ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
+        )
+
+    body = _history_body(txs, lang, header=header)
     keyboard = history_keyboard(
         filters,
         page=page,
@@ -189,24 +277,16 @@ async def render_history(
     )
     truncated_suffix = f"\n{t('history.truncated', lang)}"
 
-    if chart_path:
-        # Photo captions are capped — truncate body to fit comfortably.
-        caption = (
-            body if len(body) <= MAX_PHOTO_CAPTION
-            else body[: MAX_PHOTO_CAPTION - len(truncated_suffix)] + truncated_suffix
-        )
-        await push_photo_panel(
-            bot=bot,
-            chat_id=chat_id,
-            user_id=panel_user_id,
-            photo_path=str(chart_path),
-            caption=caption,
-            reply_markup=keyboard,
-            parse_mode=None,
-        )
-    else:
-        if len(body) > MAX_HISTORY_LEN:
-            body = body[: MAX_HISTORY_LEN - len(truncated_suffix)] + truncated_suffix
+    # Пирог-карточка: одна и та же для всех фильтров, кэшируется на сутки на юзера.
+    pie_url = await _get_or_render_pie_url(
+        user_id=telegram_id, deposits_usd=dep_usd, withdrawals_usd=wd_usd,
+    )
+
+    if len(body) > MAX_HISTORY_LEN:
+        body = body[: MAX_HISTORY_LEN - len(truncated_suffix)] + truncated_suffix
+
+    if pie_url:
+        from aiogram.types import LinkPreviewOptions
         await push_text_panel(
             bot=bot,
             chat_id=chat_id,
@@ -214,6 +294,19 @@ async def render_history(
             text=body,
             reply_markup=keyboard,
             parse_mode=None,
+            link_preview_options=LinkPreviewOptions(
+                url=pie_url, prefer_large_media=True, show_above_text=True,
+            ),
+        )
+    else:
+        await push_text_panel(
+            bot=bot,
+            chat_id=chat_id,
+            user_id=panel_user_id,
+            text=body,
+            reply_markup=keyboard,
+            parse_mode=None,
+            disable_web_preview=True,
         )
 
 

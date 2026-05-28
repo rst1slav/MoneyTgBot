@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import Select, and_, func, select
@@ -136,3 +137,34 @@ class HistoryService:
                 _SIZE_FILTER_FETCH_LIMIT,
             )
         return int((await db.execute(stmt)).scalar() or 0)
+
+    async def weekly_inout_stats_usd(
+        self, db: AsyncSession, user_id: int,
+    ) -> tuple[Decimal, Decimal]:
+        """
+        Возвращает (deposits_usd, withdrawals_usd) — сумма поступлений и
+        списаний за последние 7 дней, конвертированные в USD.
+        Используется для диаграммы в истории.
+        """
+        since = datetime.utcnow() - timedelta(days=7)
+        rows = list((await db.execute(
+            select(Transaction).where(
+                and_(
+                    Transaction.user_id == user_id,
+                    Transaction.created_at >= since,
+                )
+            )
+        )).scalars().all())
+        uah_per_usd = await self.fx.latest_uah_per_usd(db) or Decimal("40")
+        ton_usd = await self.ton.ton_price_usd() or Decimal("3")
+        dep = Decimal("0")
+        wd = Decimal("0")
+        for tx in rows:
+            usd = self._convert_to_usd(
+                Decimal(tx.amount), tx.currency, uah_per_usd, ton_usd,
+            )
+            if tx.tx_type == TransactionType.INCOME:
+                dep += usd
+            else:
+                wd += usd
+        return dep, wd
