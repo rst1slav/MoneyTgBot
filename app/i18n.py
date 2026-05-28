@@ -232,6 +232,30 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
 
         # Crypto main screen buttons
         "crypto.deposit": "📥 Пополнить",
+        "crypto.deposit.title": "📥 Пополнение",
+        "crypto.deposit.body": (
+            "Для пополнения баланса Вашего кошелька в сети <b>TON</b>, "
+            "отправьте монеты на адрес указанный ниже:\n"
+            "Адрес: <code>{addr}</code>\n\n"
+            "Минимальная сумма: <b>0.0001 TON</b> в любой монете.\n\n"
+            "⚠️ Внимание! Пополняйте только монетами в сети <b>TON</b>. "
+            "Если Вы используете другую сеть, Ваши монеты <b>будут потеряны</b>."
+        ),
+        "crypto.deposit.show_qr": "📱 Показать QR-код",
+        "crypto.deposit.hide_qr": "🙈 Скрыть QR-код",
+        "crypto.deposit.no_payment": "Не пришел депозит?",
+        "crypto.deposit.help_title": "Не пришел депозит?",
+        "crypto.deposit.help_body": (
+            "Возможно, перевод был выполнен со смарт-контракта вместо перевода "
+            "с кошелька, поэтому убедитесь, что средства успешно поступили на "
+            "ваш кошелек в блокчейне.\n\n"
+            "После этого нажмите кнопку «Проверить депозит». В случае если "
+            "депозит так и не дошел — свяжитесь с поддержкой."
+        ),
+        "crypto.deposit.check_btn": "🔍 Проверить депозит",
+        "crypto.deposit.support_btn": "💬 Связаться с поддержкой",
+        "crypto.deposit.check_in_progress": "Проверяю…",
+        "crypto.deposit.check_done": "Баланс обновлён",
         "crypto.withdraw": "📤 Вывести",
         "crypto.configure": "⚙️ Настроить",
         "crypto.stats": "📊 Статистика",
@@ -510,6 +534,30 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
 
         # Crypto main screen buttons
         "crypto.deposit": "📥 Deposit",
+        "crypto.deposit.title": "📥 Deposit",
+        "crypto.deposit.body": (
+            "To top up your wallet on the <b>TON</b> network, send coins to the "
+            "address below:\n"
+            "Address: <code>{addr}</code>\n\n"
+            "Minimum amount: <b>0.0001 TON</b> in any coin.\n\n"
+            "⚠️ Warning! Only send coins on the <b>TON</b> network. "
+            "If you use a different network, your coins <b>will be lost</b>."
+        ),
+        "crypto.deposit.show_qr": "📱 Show QR code",
+        "crypto.deposit.hide_qr": "🙈 Hide QR code",
+        "crypto.deposit.no_payment": "Deposit didn't arrive?",
+        "crypto.deposit.help_title": "Deposit didn't arrive?",
+        "crypto.deposit.help_body": (
+            "The transfer may have been sent from a smart contract instead of a "
+            "wallet, so make sure the funds successfully arrived to your wallet "
+            "on the blockchain.\n\n"
+            "Then press «Check deposit». If the deposit still didn't arrive — "
+            "contact support."
+        ),
+        "crypto.deposit.check_btn": "🔍 Check deposit",
+        "crypto.deposit.support_btn": "💬 Contact support",
+        "crypto.deposit.check_in_progress": "Checking…",
+        "crypto.deposit.check_done": "Balance updated",
         "crypto.withdraw": "📤 Withdraw",
         "crypto.configure": "⚙️ Configure",
         "crypto.stats": "📊 Statistics",
@@ -787,6 +835,30 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
 
         # Crypto main screen buttons
         "crypto.deposit": "📥 Поповнити",
+        "crypto.deposit.title": "📥 Поповнення",
+        "crypto.deposit.body": (
+            "Для поповнення балансу вашого гаманця в мережі <b>TON</b>, "
+            "надішліть монети на адресу нижче:\n"
+            "Адреса: <code>{addr}</code>\n\n"
+            "Мінімальна сума: <b>0.0001 TON</b> у будь-якій монеті.\n\n"
+            "⚠️ Увага! Поповнюйте тільки монетами в мережі <b>TON</b>. "
+            "Якщо ви використовуєте іншу мережу, ваші монети <b>буде втрачено</b>."
+        ),
+        "crypto.deposit.show_qr": "📱 Показати QR-код",
+        "crypto.deposit.hide_qr": "🙈 Сховати QR-код",
+        "crypto.deposit.no_payment": "Не прийшов депозит?",
+        "crypto.deposit.help_title": "Не прийшов депозит?",
+        "crypto.deposit.help_body": (
+            "Можливо, переказ було виконано зі смарт-контракту замість гаманця, "
+            "тому переконайтеся, що кошти успішно прийшли на ваш гаманець у "
+            "блокчейні.\n\n"
+            "Після цього натисніть «Перевірити депозит». Якщо депозит так і не "
+            "прийшов — зв'яжіться з підтримкою."
+        ),
+        "crypto.deposit.check_btn": "🔍 Перевірити депозит",
+        "crypto.deposit.support_btn": "💬 Зв'язатися з підтримкою",
+        "crypto.deposit.check_in_progress": "Перевіряю…",
+        "crypto.deposit.check_done": "Баланс оновлено",
         "crypto.withdraw": "📤 Вивести",
         "crypto.configure": "⚙️ Налаштувати",
         "crypto.stats": "📊 Статистика",

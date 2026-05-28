@@ -534,6 +534,44 @@ def crypto_main_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def crypto_deposit_keyboard(
+    lang: str = "ru", *, qr_shown: bool = False,
+) -> InlineKeyboardMarkup:
+    """Клавиатура экрана пополнения. QR-кнопка переключает показ/скрытие."""
+    qr_text = (
+        t("crypto.deposit.hide_qr", lang) if qr_shown
+        else t("crypto.deposit.show_qr", lang)
+    )
+    qr_cb = "crypto:dep_hide_qr" if qr_shown else "crypto:dep_show_qr"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=qr_text, callback_data=qr_cb)],
+            [InlineKeyboardButton(
+                text=t("crypto.deposit.no_payment", lang),
+                callback_data="crypto:dep_help",
+            )],
+            [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")],
+        ]
+    )
+
+
+def crypto_deposit_help_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    """Экран 'не пришёл депозит?': кнопки проверки и поддержки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=t("crypto.deposit.check_btn", lang),
+                callback_data="crypto:dep_check",
+            )],
+            [InlineKeyboardButton(
+                text=t("crypto.deposit.support_btn", lang),
+                callback_data="crypto:dep_support",
+            )],
+            [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:deposit")],
+        ]
+    )
+
+
 def crypto_settings_keyboard(
     lang: str = "ru", *, has_wallet: bool = True
 ) -> InlineKeyboardMarkup:

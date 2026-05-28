@@ -22,6 +22,7 @@ dependencies = [
   "mnemonic>=0.21",
   "tonsdk>=1.0.15",
   "bip_utils>=2.12.1",
+  "qrcode>=7.4.2",
 ]
 
 [project.optional-dependencies]

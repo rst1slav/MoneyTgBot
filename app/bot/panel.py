@@ -26,16 +26,20 @@ async def _safe_edit_text(
     reply_markup: InlineKeyboardMarkup | None = None,
     parse_mode: str | None = None,
     disable_web_preview: bool = False,
+    link_preview_options=None,
 ) -> None:
+    kwargs: dict = dict(
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode,
+    )
+    if link_preview_options is not None:
+        kwargs["link_preview_options"] = link_preview_options
+    else:
+        kwargs["disable_web_page_preview"] = disable_web_preview
     try:
-        await bot.edit_message_text(
-            text,
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            disable_web_page_preview=disable_web_preview,
-        )
+        await bot.edit_message_text(text, **kwargs)
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc).lower():
             return
@@ -109,6 +113,7 @@ async def push_text_panel(
     parse_mode: str | None = None,
     disable_web_preview: bool = False,
     force_new: bool = False,
+    link_preview_options=None,
 ) -> None:
     mid = get_panel_id(chat_id, user_id)
     if mid and not force_new:
@@ -121,6 +126,7 @@ async def push_text_panel(
                 reply_markup=reply_markup,
                 parse_mode=parse_mode,
                 disable_web_preview=disable_web_preview,
+                link_preview_options=link_preview_options,
             )
             return
         except TelegramBadRequest:
@@ -128,13 +134,15 @@ async def push_text_panel(
                 await bot.delete_message(chat_id, mid)
             except TelegramBadRequest:
                 pass
-    sent = await bot.send_message(
-        chat_id,
-        text,
+    send_kwargs: dict = dict(
         reply_markup=reply_markup,
         parse_mode=parse_mode,
-        disable_web_page_preview=disable_web_preview,
     )
+    if link_preview_options is not None:
+        send_kwargs["link_preview_options"] = link_preview_options
+    else:
+        send_kwargs["disable_web_page_preview"] = disable_web_preview
+    sent = await bot.send_message(chat_id, text, **send_kwargs)
     set_panel_id(chat_id, user_id, sent.message_id)
 
 

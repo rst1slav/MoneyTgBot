@@ -13,6 +13,8 @@ from sqlalchemy import and_, select
 
 from app.bot.keyboards import (
     crypto_create_success_keyboard,
+    crypto_deposit_help_keyboard,
+    crypto_deposit_keyboard,
     crypto_display_mode_keyboard,
     crypto_empty_keyboard,
     crypto_import_prompt_keyboard,
@@ -424,6 +426,89 @@ def _convert_usd_to_base(
 def _ccy_short(label: str) -> str:
     """Короткий тег валюты для отображения в скобках: '$', '₴', 'EUR' и т.п."""
     return _CCY_SYMBOL.get(label.upper(), label.upper())
+
+
+async def _render_deposit_screen(
+    *,
+    bot,
+    chat_id: int,
+    uid: int,
+    uname: str | None,
+    callback,
+    qr_shown: bool,
+) -> None:
+    """
+    Рисует экран пополнения. Если qr_shown=True — генерим QR и шлём как
+    link preview через наш веб-сервис, иначе показываем только текст.
+    """
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+        accounts = await ledger.get_active_accounts_by_type(
+            db, user.id, AccountType.TON_WALLET,
+        )
+
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        pass
+
+    if not accounts:
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
+    idx = _current_wallet_idx.get(uid, 0)
+    if idx < 0 or idx >= len(accounts):
+        idx = 0
+    acc = accounts[idx]
+    addr = acc.external_ref or ""
+
+    text = (
+        f"<b>{t('crypto.deposit.title', lang)}</b>\n\n"
+        + t("crypto.deposit.body", lang).format(addr=html.escape(addr))
+    )
+
+    keyboard = crypto_deposit_keyboard(lang, qr_shown=qr_shown)
+
+    qr_url: str | None = None
+    if qr_shown:
+        try:
+            from app.services.qr_service import render_wallet_qr
+            from app.bot.handlers.transactions import _upload_card_to_web
+            png_bytes = render_wallet_qr(addr)
+            qr_url = await _upload_card_to_web(
+                png_bytes,
+                title=f"QR — {addr[:8]}…",
+                description="TON deposit QR",
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("QR render failed: %s", exc)
+            qr_url = None
+
+    if qr_url:
+        # Шлём через push_text_panel с link_preview — превью с QR появится сверху.
+        from aiogram.types import LinkPreviewOptions
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+            link_preview_options=LinkPreviewOptions(
+                url=qr_url, prefer_large_media=True, show_above_text=True,
+            ),
+        )
+    else:
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+            disable_web_preview=True,
+        )
 
 
 async def render_crypto_main(
@@ -1962,24 +2047,81 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         return
 
     if action == "deposit":
+        await _render_deposit_screen(
+            bot=bot, chat_id=chat_id, uid=uid, uname=uname,
+            callback=callback, qr_shown=False,
+        )
+        return
+
+    if action == "dep_show_qr":
+        await _render_deposit_screen(
+            bot=bot, chat_id=chat_id, uid=uid, uname=uname,
+            callback=callback, qr_shown=True,
+        )
+        return
+
+    if action == "dep_hide_qr":
+        await _render_deposit_screen(
+            bot=bot, chat_id=chat_id, uid=uid, uname=uname,
+            callback=callback, qr_shown=False,
+        )
+        return
+
+    if action == "dep_help":
         async with SessionLocal() as db:
             user = await ledger.ensure_user(db, uid, uname)
             lang = getattr(user, "language", "ru") or "ru"
-            accounts = await ledger.get_active_accounts_by_type(db, user.id, AccountType.TON_WALLET)
         try:
             await callback.answer()
         except TelegramBadRequest:
             pass
-        idx = _current_wallet_idx.get(uid, 0)
-        if accounts and 0 <= idx < len(accounts):
-            acc = accounts[idx]
-            wallets = [(a.id, _ton_display_label(a)) for a in accounts]
-            await push_text_panel(
-                bot=bot, chat_id=chat_id, user_id=uid,
-                text=f"<b>{t('crypto.deposit_addr_label', lang)}:</b>\n\n<code>{html.escape(acc.external_ref or '')}</code>",
-                reply_markup=crypto_main_keyboard(wallets=wallets, current_idx=idx, lang=lang),
-                parse_mode="HTML",
-            )
+        text = (
+            f"<b>{t('crypto.deposit.help_title', lang)}</b>\n\n"
+            f"{t('crypto.deposit.help_body', lang)}"
+        )
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=text,
+            reply_markup=crypto_deposit_help_keyboard(lang),
+            parse_mode="HTML",
+            disable_web_preview=True,
+        )
+        return
+
+    if action == "dep_check":
+        # Сбрасываем кэш балансов и перерисовываем главный кошелёчный экран.
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        try:
+            await callback.answer(t("crypto.deposit.check_done", lang))
+        except TelegramBadRequest:
+            pass
+        _profile_snapshot_cache.pop(user.id, None)
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
+    if action == "dep_support":
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        try:
+            # Открываем чат с поддержкой через URL — попап с подтверждением.
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        # Простое сообщение со ссылкой; настоящий саппорт-username замени на свой
+        await bot.send_message(
+            chat_id=chat_id,
+            text=("Напишите в поддержку: @YonaSupport"
+                  if lang == "ru" else
+                  "Contact support: @YonaSupport"
+                  if lang == "en" else
+                  "Напишіть у підтримку: @YonaSupport"),
+        )
         return
 
     if action == "withdraw":
