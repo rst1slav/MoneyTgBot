@@ -2147,6 +2147,12 @@ async def profile_crypto_seed_input(message: Message) -> None:
             await db.commit()
             _pending_crypto_seed_only.discard(uid)
             _profile_snapshot_cache.pop(user.id, None)
+            # Удаляем сообщение пользователя с seed-фразой — она не должна
+            # оставаться в чате в открытом виде.
+            try:
+                await message.delete()
+            except Exception:
+                pass
             # Open the just-imported wallet.
             accounts = await ledger.get_active_accounts_by_type(
                 db, user.id, AccountType.TON_WALLET
@@ -2178,6 +2184,11 @@ async def profile_crypto_seed_input(message: Message) -> None:
             account.encrypted_secret = _cipher.encrypt(seed_phrase)
             await db.commit()
             _pending_crypto_seed_import.discard(uid)
+            # Удаляем сообщение пользователя с seed-фразой.
+            try:
+                await message.delete()
+            except Exception:
+                pass
             await message.answer(t("profile.crypto.import_saved", lang))
         elif uid in _pending_crypto_create_addr:
             seed_phrase = _pending_crypto_create_addr[uid]

@@ -432,11 +432,15 @@ def _coin_pagination_buttons(
     current_page: int, total_pages: int, max_btns: int = 5
 ) -> list[tuple[str, int]]:
     """Returns [(label, page_num), ...] sized to fit `max_btns` slots."""
+    # Маркер выбранной страницы: «• 1 •» (с пробелами вокруг номера).
+    def _sel(p: int) -> str:
+        return f"• {p} •"
+
     if total_pages <= 1:
-        return [("•1•", 1)]
+        return [(_sel(1), 1)]
     if total_pages <= max_btns:
         return [
-            (f"•{p}•" if p == current_page else str(p), p)
+            (_sel(p) if p == current_page else str(p), p)
             for p in range(1, total_pages + 1)
         ]
     # total_pages > max_btns: window + last-page jump.
@@ -444,9 +448,9 @@ def _coin_pagination_buttons(
         # Show first (max_btns - 1) pages, with "›" on the boundary, then last "›››".
         out: list[tuple[str, int]] = []
         for p in range(1, max_btns - 1):
-            out.append((f"•{p}•" if p == current_page else str(p), p))
+            out.append((_sel(p) if p == current_page else str(p), p))
         boundary = max_btns - 1
-        out.append((f"•{boundary}•" if boundary == current_page else f"{boundary} ›", boundary))
+        out.append((_sel(boundary) if boundary == current_page else f"{boundary} ›", boundary))
         out.append((f"{total_pages} ›››", total_pages))
         return out
     if current_page >= total_pages - (max_btns - 3):
@@ -454,13 +458,13 @@ def _coin_pagination_buttons(
         out = [(f"‹‹‹ 1", 1)]
         start = total_pages - (max_btns - 2)
         for p in range(start, total_pages + 1):
-            out.append((f"•{p}•" if p == current_page else str(p), p))
+            out.append((_sel(p) if p == current_page else str(p), p))
         return out
-    # Middle: ‹‹‹ 1, prev, •current•, next ›, last ›››
+    # Middle: ‹‹‹ 1, prev, • current •, next ›, last ›››
     return [
         (f"‹‹‹ 1", 1),
         (str(current_page - 1), current_page - 1),
-        (f"•{current_page}•", current_page),
+        (_sel(current_page), current_page),
         (f"{current_page + 1} ›", current_page + 1),
         (f"{total_pages} ›››", total_pages),
     ]

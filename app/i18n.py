@@ -264,7 +264,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "crypto.import.subtitle": "Отправьте seed-фразу одним сообщением",
         "crypto.import.not_found": "❌ Кошелёк не был найден",
         "crypto.create.success_title": "✅ Кошелёк успешно создан!",
-        "crypto.create.success_subtitle": "Сохраните seed-фразу в надежном месте чтобы не потерять доступ:",
+        "crypto.create.success_subtitle": "Сохраните seed-фразу в надежном месте, чтобы не потерять доступ к кошельку:",
         "crypto.create.copy_btn": "📋 Скопировать",
         "crypto.create.to_wallet_btn": "👛 К кошельку",
         "crypto.empty.title": "ℹ️ У вас еще нет кошелька",
@@ -288,8 +288,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "menu.yona.refs": "👨‍🌾 Рефералы",
         "crypto.unlink_confirm": (
             "<b>⚠️ Точно отвязать этот кошелек?</b>\n\n"
-            "Будьте акуратны, если вы не сохранили seed-фразу то больше не сможете "
-            "вернуть этот кошелёк."
+            "Если вы не сохранили seed-фразу то больше не сможете вернуть этот кошелёк."
         ),
         "crypto.unlinked": "Кошелек отвязан",
         "crypto.no_wallet": "Нет подключённого кошелька.",
@@ -542,7 +541,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "crypto.import.subtitle": "Send the seed phrase in one message",
         "crypto.import.not_found": "❌ Wallet was not found",
         "crypto.create.success_title": "✅ Wallet successfully created!",
-        "crypto.create.success_subtitle": "Save the seed phrase in a safe place so you don't lose access:",
+        "crypto.create.success_subtitle": "Save your seed phrase in a safe place so you don't lose access to your wallet:",
         "crypto.create.copy_btn": "📋 Copy",
         "crypto.create.to_wallet_btn": "👛 Open wallet",
         "crypto.empty.title": "ℹ️ You don't have a wallet yet",
@@ -566,8 +565,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "menu.yona.refs": "👨‍🌾 Referrals",
         "crypto.unlink_confirm": (
             "<b>⚠️ Really unlink this wallet?</b>\n\n"
-            "Be careful: if you haven't saved the seed phrase, you won't be able to "
-            "restore this wallet."
+            "If you haven't saved the seed phrase, you won't be able to restore this wallet."
         ),
         "crypto.unlinked": "Wallet unlinked",
         "crypto.no_wallet": "No wallet connected.",
@@ -821,7 +819,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "crypto.import.subtitle": "Надішліть seed-фразу одним повідомленням",
         "crypto.import.not_found": "❌ Гаманець не знайдено",
         "crypto.create.success_title": "✅ Гаманець успішно створено!",
-        "crypto.create.success_subtitle": "Збережіть seed-фразу в надійному місці, щоб не втратити доступ:",
+        "crypto.create.success_subtitle": "Збережіть seed-фразу в надійному місці, щоб не втратити доступ до гаманця:",
         "crypto.create.copy_btn": "📋 Скопіювати",
         "crypto.create.to_wallet_btn": "👛 До гаманця",
         "crypto.empty.title": "ℹ️ У вас ще немає гаманця",
@@ -845,8 +843,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "menu.yona.refs": "👨‍🌾 Реферали",
         "crypto.unlink_confirm": (
             "<b>⚠️ Точно відв'язати цей гаманець?</b>\n\n"
-            "Будьте обережні: якщо ви не зберегли seed-фразу, ви не зможете "
-            "повернути цей гаманець."
+            "Якщо ви не зберегли seed-фразу, ви не зможете повернути цей гаманець."
         ),
         "crypto.unlinked": "Гаманець відв'язано",
         "crypto.no_wallet": "Немає підключеного гаманця.",
