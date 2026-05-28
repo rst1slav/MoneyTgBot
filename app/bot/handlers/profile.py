@@ -294,77 +294,32 @@ def _generate_seed_phrase(word_count: int = 24) -> str:
         return Mnemonic("english").generate(strength=256)
 
 
-def _derive_v5r1_address(pub_key: bytes, workchain: int = 0) -> str | None:
+async def _derive_v5r1_address(seed_words: list[str]) -> str | None:
     """
-    Вычисляет адрес V5R1 (W5) — текущая дефолтная версия в Tonkeeper.
+    V5R1 (W5) — текущая дефолтная версия Tonkeeper, MyTonWallet, Tonhub.
 
-    Использует pytoniq-core для построения cells и хеша state_init.
-    Хардкод кода контракта V5R1 (BoC из tonkeeper/w5).
+    Используем pytoniq.contract.wallets.WalletV5R1 — она содержит точный код
+    контракта и storage layout. Provider=None не критичен, потому что для
+    вычисления адреса используется только локальная криптография (mnemonic →
+    pub_key → state_init hash).
     """
     try:
-        from pytoniq_core import Address, Cell, begin_cell
+        from pytoniq.contract.wallets.wallet import WalletV5R1
     except Exception:
         return None
-
-    # V5R1 code BoC из mainnet (sha256 хэш кода совпадает с тем что используют
-    # Tonkeeper, Tonhub, MyTonWallet и другие при создании нового кошелька).
-    V5R1_CODE_HEX = (
-        "b5ee9c7241021401000281000114ff00f4a413f4bcf2c80b01020120020d020148"
-        "030402dcd020d749c120915b8f6320d70b1f2082106578746ebd21821073696e74"
-        "bdb0925f03e082106578746eba8eb48020d72101d074d721fa4030fa44f828fa44"
-        "30b0f2c4d8d0d31fed44d0d31f30d70b1f8210706c7567ba9203a4ed44d0fa40fa"
-        "40d70b1ff405d31f01d0ed44d0d401d0d33ff404d70b1fd31f016f04822c0506"
-        "0708090a01060073fe003120d749c120925f04e0d31f018210706c7567bae302"
-        "8210595f07bcba16e30d0b0c020120111201f4cf01d401d0d31fed44d0d31fd0"
-        "d33ff404d33fd33f10b95f0a01abe300d33ff828fa44313031d0fa00d33fd401"
-        "d0fa44308307f47c6fa1f2e2c40b923a0b09e30db0008820103dfff405d70b1fd3"
-        "1f01d0d31fd33ff404f828f846f843f844f845f846f847f8487032107000700"
-        "70078d0f9018af923c01e8d0d33fd200d3060010fff01ee01d0d33ff404f828f846"
-        "f843f8440d0e00b8200182ff0b6cdb12dbc46cdb12db5cdbf25c9e21c10cd"
-    )
     try:
-        code_cell = Cell.one_from_boc(bytes.fromhex(V5R1_CODE_HEX))
-    except Exception:
-        # Если код невалидный — просто возвращаем None, не падаем.
-        return None
-
-    # wallet_id для W5: 2147483409 (0x7FFFFF11) — стандарт для mainnet wc=0.
-    WALLET_ID = 2147483409
-
-    try:
-        # Storage: is_signature_allowed | seqno | wallet_id | pub_key | empty_extensions
-        data_cell = (
-            begin_cell()
-            .store_bit(1)               # is_signature_allowed = true
-            .store_uint(0, 32)           # seqno
-            .store_uint(WALLET_ID, 32)   # wallet_id
-            .store_bytes(pub_key)        # 32 байта pub_key
-            .store_bit(0)                # extensions dict empty
-            .end_cell()
+        wallet = await WalletV5R1.from_mnemonic(provider=None, mnemonics=seed_words)
+        return wallet.address.to_str(
+            is_user_friendly=True, is_bounceable=True, is_url_safe=True,
         )
-        # StateInit = (split_depth:Maybe, special:Maybe, code:Maybe^Cell, data:Maybe^Cell, library:HashmapE)
-        state_init = (
-            begin_cell()
-            .store_uint(0, 2)            # no split_depth, no special
-            .store_bit(1).store_ref(code_cell)
-            .store_bit(1).store_ref(data_cell)
-            .store_bit(0)                # no library
-            .end_cell()
-        )
-        addr_hash = state_init.hash
-        if callable(addr_hash):
-            addr_hash = addr_hash()
-        address = Address((workchain, addr_hash))
-        return address.to_str(is_user_friendly=True, is_bounceable=True, is_url_safe=True)
     except Exception:
         return None
 
 
-def _derive_ton_addresses(seed: str) -> list[str]:
+async def _derive_ton_addresses(seed: str) -> list[str]:
     """
-    Возвращает СПИСОК адресов-кандидатов из одной seed-фразы, под разные
-    версии TON-кошельков: V5R1 (W5, новый дефолт Tonkeeper), V4R2, V3R2, V4R1.
-    Дополнительно пытается BIP39-производный путь, если seed не TON-native.
+    Возвращает СПИСОК адресов-кандидатов из одной seed-фразы под разные
+    версии TON-кошельков: V5R1 (W5), V4R2, V3R2, V4R1. + BIP39 фоллбэк.
     Дубликаты убираются, порядок сохраняется.
     """
     import logging
@@ -381,21 +336,14 @@ def _derive_ton_addresses(seed: str) -> list[str]:
             out.append(addr)
             seen.add(addr)
 
-    # TON-native mnemonic (24 слова) — пробуем W5 + классические V3/V4 версии
+    # 1) V5R1 (W5) — первая в порядке, так как новый дефолт большинства кошельков
+    if len(words) == 24:
+        _add(await _derive_v5r1_address(words))
+
+    # 2) Старые версии через tonsdk (24 слова, TON-native mnemonic)
     if len(words) == 24:
         try:
-            from tonsdk.crypto import mnemonic_to_wallet_key
             from tonsdk.contract.wallet import Wallets, WalletVersionEnum
-
-            # Получаем pub_key для построения W5 адреса
-            try:
-                pub_key, _priv_key = mnemonic_to_wallet_key(words)
-                # tonsdk: returns (pub_key_32_bytes, priv_key_64_bytes)
-                if isinstance(pub_key, (bytes, bytearray)) and len(pub_key) == 32:
-                    _add(_derive_v5r1_address(bytes(pub_key), workchain=0))
-            except Exception as exc:
-                log.info("V5R1 derivation failed: %s", exc)
-
             for ver in (WalletVersionEnum.v4r2, WalletVersionEnum.v3r2,
                         WalletVersionEnum.v4r1):
                 try:
@@ -406,7 +354,7 @@ def _derive_ton_addresses(seed: str) -> list[str]:
         except Exception as exc:
             log.info("tonsdk import failed: %s", exc)
 
-    # BIP39 (12/15/18/21/24)
+    # 3) BIP39 fallback (12/15/18/21/24)
     if len(words) in {12, 15, 18, 21, 24}:
         try:
             from bip_utils import (
@@ -455,12 +403,18 @@ async def _pick_active_ton_address(candidates: list[str]) -> str | None:
 
 def _derive_ton_address(seed: str) -> str | None:
     """
-    Обратная совместимость со старым именем. Возвращает V4R2-адрес (первый
-    кандидат). Для синхронной валидации в местах, где нет access к async API.
-    Новый код должен использовать _derive_ton_addresses + _pick_active_ton_address.
+    Синхронный фоллбэк — возвращает только V4R2 адрес. Для async-контекста
+    используй await _derive_ton_addresses + _pick_active_ton_address.
     """
-    candidates = _derive_ton_addresses(seed)
-    return candidates[0] if candidates else None
+    words = [w.strip().lower() for w in (seed or "").split() if w.strip()]
+    if len(words) != 24:
+        return None
+    try:
+        from tonsdk.contract.wallet import Wallets, WalletVersionEnum
+        _, _, _, wallet = Wallets.from_mnemonics(words, WalletVersionEnum.v4r2, 0)
+        return wallet.address.to_string(True, True, True)
+    except Exception:
+        return None
 
 
 async def _ensure_first_wallet(db, user_id: int) -> None:
@@ -2476,9 +2430,9 @@ async def profile_crypto_seed_input(message: Message) -> None:
         if uid in _pending_crypto_seed_only:
             # Normalize once so we store the same form we validated against.
             normalized = " ".join(w.strip().lower() for w in raw.split() if w.strip())
-            # Перебираем V3R2 / V4R1 / V4R2 / BIP39 и выбираем тот адрес, что
-            # реально существует на блокчейне (статус active или баланс > 0).
-            candidates = _derive_ton_addresses(normalized)
+            # Перебираем W5 / V4R2 / V3R2 / V4R1 / BIP39 и выбираем тот адрес,
+            # что реально существует на блокчейне (active или balance > 0).
+            candidates = await _derive_ton_addresses(normalized)
             address = await _pick_active_ton_address(candidates)
             if not address:
                 # Stay in import mode; show "not found" + prompt again.

@@ -24,6 +24,7 @@ dependencies = [
   "bip_utils>=2.12.1",
   "qrcode>=7.4.2",
   "pytoniq-core>=0.1.36",
+  "pytoniq>=0.1.40",
 ]
 
 [project.optional-dependencies]
