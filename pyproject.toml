@@ -25,6 +25,7 @@ dependencies = [
   "qrcode>=7.4.2",
   "pytoniq-core>=0.1.36",
   "pytoniq>=0.1.40",
+  "tonutils>=0.4.0",
 ]
 
 [project.optional-dependencies]

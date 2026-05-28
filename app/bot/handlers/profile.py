@@ -2581,38 +2581,38 @@ async def profile_crypto_seed_input(message: Message) -> None:
             return
 
         if uid in _pending_crypto_seed_only:
-            # Normalize once so we store the same form we validated against.
             normalized = " ".join(w.strip().lower() for w in raw.split() if w.strip())
-            # Перебираем W5 / V4R2 / V3R2 / V4R1 / BIP39 и выбираем тот адрес,
-            # что реально существует на блокчейне (active или balance > 0).
-            candidates = await _derive_ton_addresses(normalized)
-            address = await _pick_active_ton_address(candidates)
+            # Новая чистая реализация — все либы перебираются внутри.
+            from app.services.wallet_derive import derive_address_from_seed
+            address, all_candidates = await derive_address_from_seed(normalized)
+            import logging
+            logging.getLogger(__name__).info(
+                "Seed import: %d candidates, active=%s", len(all_candidates), address,
+            )
             if not address:
-                # Ни один кандидат не активен → удаляем сообщение с seed (она
-                # уже не нужна — мы не сохраним такую неточную привязку) и
-                # автоматически переключаем юзера в режим ввода адреса.
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-                _pending_crypto_seed_only.discard(uid)
-                _pending_crypto_addr_only.add(uid)
-                err_text = (
-                    f"<b>❌ {t('crypto.import.not_found', lang)}</b>\n\n"
-                    "Не удалось найти активный кошелёк автоматически.\n"
-                    "Пожалуйста, вставьте адрес кошелька (EQ... или UQ...) — "
-                    "скопируй его в Tonkeeper:"
-                )
-                await push_text_panel(
-                    bot=message.bot,
-                    chat_id=message.chat.id,
-                    user_id=uid,
-                    text=err_text,
-                    reply_markup=crypto_import_prompt_keyboard(lang, back_to="crypto:new_menu"),
-                    parse_mode="HTML",
-                    disable_web_preview=True,
-                )
-                return
+                # Если ни один кандидат не активен — сохраняем первого по списку
+                # (W5R1 от tonutils) как best-effort. Юзер может пополнить и оно
+                # активируется в сети.
+                if all_candidates:
+                    address = all_candidates[0]
+                    logging.getLogger(__name__).info(
+                        "No active address found, using default candidate: %s", address,
+                    )
+                else:
+                    err_text = (
+                        f"<b>❌ {t('crypto.import.not_found', lang)}</b>\n\n"
+                        + t("crypto.import.subtitle", lang)
+                    )
+                    await push_text_panel(
+                        bot=message.bot,
+                        chat_id=message.chat.id,
+                        user_id=uid,
+                        text=err_text,
+                        reply_markup=crypto_import_prompt_keyboard(lang, back_to="crypto:new_menu"),
+                        parse_mode="HTML",
+                        disable_web_preview=True,
+                    )
+                    return
             account = await ton_service.link_wallet(db, user.id, address)
             account.encrypted_secret = _cipher.encrypt(normalized)
             await db.commit()
