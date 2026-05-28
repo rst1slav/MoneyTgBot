@@ -63,6 +63,7 @@ _current_coin_page: dict[int, int] = {}
 _balance_display_mode: dict[int, str] = {}  # user_id → "all" | "min1usd"
 _pending_crypto_rename: dict[int, int] = {}  # user_id → wallet account_id
 _pending_crypto_seed_only: set[int] = set()  # user_id → awaiting seed-only import
+_pending_crypto_addr_only: set[int] = set()  # user_id → awaiting address-only import
 _last_generated_seed: dict[int, str] = {}    # user_id → just-generated seed (for 📋 copy button)
 
 COINS_PER_PAGE = 8
@@ -2047,6 +2048,7 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         back_target = "crypto:new_menu" if existing else "crypto:refresh"
         _pending_crypto_seed_only.add(uid)
         _pending_crypto_seed_import.discard(uid)
+        _pending_crypto_addr_only.discard(uid)
         _pending_crypto_create_addr.pop(uid, None)
         _pending_crypto_rename.pop(uid, None)
         try:
@@ -2056,6 +2058,34 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         text = (
             f"<b>{t('crypto.import.title', lang)}</b>\n\n"
             + t("crypto.import.subtitle", lang)
+        )
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=text,
+            reply_markup=crypto_import_prompt_keyboard(lang, back_to=back_target),
+            parse_mode="HTML",
+            disable_web_preview=True,
+        )
+        return
+
+    if action == "new_import_addr":
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+            existing = await ledger.get_active_accounts_by_type(db, user.id, AccountType.TON_WALLET)
+        back_target = "crypto:new_menu" if existing else "crypto:refresh"
+        _pending_crypto_addr_only.add(uid)
+        _pending_crypto_seed_only.discard(uid)
+        _pending_crypto_seed_import.discard(uid)
+        _pending_crypto_create_addr.pop(uid, None)
+        _pending_crypto_rename.pop(uid, None)
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        text = (
+            f"<b>{t('crypto.import_addr.title', lang)}</b>\n\n"
+            + t("crypto.import_addr.subtitle", lang)
         )
         await push_text_panel(
             bot=bot, chat_id=chat_id, user_id=uid,
@@ -2384,6 +2414,7 @@ async def set_basic_gifts_input(message: Message) -> None:
     lambda m: bool(
         m.from_user and m.text and (
             m.from_user.id in _pending_crypto_seed_only
+            or m.from_user.id in _pending_crypto_addr_only
             or m.from_user.id in _pending_crypto_seed_import
             or m.from_user.id in _pending_crypto_create_addr
             or m.from_user.id in _pending_crypto_rename
@@ -2406,6 +2437,33 @@ async def profile_crypto_seed_input(message: Message) -> None:
                 account.display_name = raw[:255]
                 await db.commit()
                 _profile_snapshot_cache.pop(user.id, None)
+            await render_crypto_main(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                panel_user_id=uid,
+                telegram_id=uid,
+                username=message.from_user.username,
+            )
+            return
+
+        if uid in _pending_crypto_addr_only:
+            address = raw.strip()
+            if not _is_valid_ton_address(address):
+                await message.answer(t("crypto.import_addr.invalid", lang))
+                return
+            account = await ton_service.link_wallet(db, user.id, address)
+            # Никакого seed — храним только адрес (view-only).
+            await db.commit()
+            _pending_crypto_addr_only.discard(uid)
+            _profile_snapshot_cache.pop(user.id, None)
+            accounts = await ledger.get_active_accounts_by_type(
+                db, user.id, AccountType.TON_WALLET,
+            )
+            for i, a in enumerate(accounts):
+                if a.id == account.id:
+                    _current_wallet_idx[uid] = i
+                    break
+            _current_coin_page[uid] = 1
             await render_crypto_main(
                 bot=message.bot,
                 chat_id=message.chat.id,
