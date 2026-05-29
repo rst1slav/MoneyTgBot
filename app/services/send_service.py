@@ -96,27 +96,57 @@ async def execute_transfer(
             except Exception as exc:
                 log.warning("send: wallet.refresh failed: %s", exc)
 
-            # Проверка TON-баланса на оплату сетевого газа. Если контракт
-            # ещё uninit — первая транзакция деплоит его (~0.05 TON), плюс
-            # стоимость самого перевода. Жетон-переводы ещё дороже, т.к.
-            # owner шлёт сообщение в jetton wallet (тоже может потребовать
-            # деплой), который шлёт получателю.
             ton_balance_nano = int(getattr(wallet.info, "balance", 0) or 0)
-            is_jetton = (symbol or "").upper() != "TON"
-            need_for_deploy = 50_000_000 if not wallet.is_active else 0
-            need_for_send = 100_000_000 if is_jetton else 10_000_000
-            need_total = need_for_deploy + need_for_send
-            if ton_balance_nano < need_total:
-                need_ton = need_total / 1e9
-                have_ton = ton_balance_nano / 1e9
-                raise SendError(
-                    f"На кошельке не хватает TON для оплаты сетевого газа. "
-                    f"Нужно минимум {need_ton:.3f} TON, сейчас "
-                    f"{have_ton:.9f}. Пополни кошелёк нативным TON "
-                    f"и попробуй снова."
-                )
 
             sym = (symbol or "").upper()
+
+            # Если жетон и у юзера мало TON — пытаемся через TonAPI gasless
+            # relay: он сам сожрёт часть переводимого жетона в качестве
+            # комиссии, конвертит её в TON для оплаты газа сети.
+            # Поддержка: только W5R1 + поддерживаемые жетоны (USDT основной).
+            is_jetton = sym != "TON"
+            min_ton_for_local_send = 100_000_000  # 0.1 TON
+            try_gasless = (
+                is_jetton
+                and wallet_cls.__name__ == "WalletV5R1"
+                and ton_balance_nano < min_ton_for_local_send
+            )
+            if try_gasless:
+                meta = JETTON_MASTERS.get(sym)
+                if meta is None:
+                    raise SendError(f"Жетон {sym} пока не поддерживается.")
+                master_addr, decimals = meta
+                jetton_amount = int(
+                    (amount * (Decimal(10) ** decimals)).to_integral_value()
+                )
+                if jetton_amount <= 0:
+                    raise SendError("Сумма должна быть больше нуля.")
+                try:
+                    estimate = await wallet.gasless_estimate(
+                        destination=to_address,
+                        jetton_amount=jetton_amount,
+                        jetton_master_address=master_addr,
+                        forward_payload=memo or None,
+                    )
+                    log.info(
+                        "send: gasless estimate ok, relay=%s commission=%s",
+                        estimate.relay_address, estimate.commission,
+                    )
+                    await wallet.gasless_send(estimate)
+                    # gasless_send не возвращает hash, отдадим хеш кошелька
+                    # как proxy. Tonviewer покажет последнюю транзу адреса.
+                    return ""
+                except Exception as exc:
+                    log.warning(
+                        "send: gasless attempt failed (%s) — falling back to regular send",
+                        exc,
+                    )
+                    # Падаем — пользователю покажем понятную ошибку дальше.
+                    raise SendError(
+                        f"Не удалось отправить через gasless-relay: {exc}. "
+                        f"Положи ~0.15 TON на кошелёк и попробуй снова."
+                    )
+
             builders: list[Any] = []
             if sym == "TON":
                 amount_nano = int(amount * Decimal("1000000000"))
