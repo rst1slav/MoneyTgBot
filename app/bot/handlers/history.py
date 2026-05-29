@@ -117,32 +117,33 @@ def _history_body(
     header: str | None = None,
 ) -> str:
     """
-    Новый формат — транзакции группируются по дню. Заголовок (с %депозитов /
-    %выводов / суммами) приходит снаружи и приклеивается сверху.
+    Транзакции группируются по дню. Под каждой датой — раскрывающаяся
+    цитата с операциями. Без пустых строк между группами. HTML.
 
-    Пример вывода:
+    Пример:
         За последние 7 дней:
         • Депозиты (65.7%): 3 948.95 USD
         • Выводы (34.3%): 3 948.95 USD
-
         18.05.26
-        16:16: +6.7 TON
-        14:30: −12 USDT
-
+        ▎ 16:16: +6.7 TON
+        ▎ 14:30: −12 USDT
         17.05.26
-        21:00: +100 UAH
+        ▎ 21:00: +100 UAH
     """
+    import html as _html
+
     out: list[str] = []
     if header:
-        out.append(header)
+        out.append(_html.escape(header))
 
     if not txs:
         if not header:
-            return t("history.empty", lang)
-        out.append("")
-        out.append(t("history.empty", lang))
+            return _html.escape(t("history.empty", lang))
+        out.append(_html.escape(t("history.empty", lang)))
         return "\n".join(out)
 
+    # Группируем транзакции по дню, сохраняя порядок.
+    groups: list[tuple[str, list[str]]] = []
     current_day: str | None = None
     for tx in txs:
         day = tx.created_at.strftime("%d.%m.%y")
@@ -150,12 +151,18 @@ def _history_body(
         sign = "+" if tx.tx_type.value == "income" else "−"
         amount_str = _fmt_tx_amount(tx.amount)
         currency = tx.currency.value
+        line = _html.escape(f"{time}: {sign}{amount_str} {currency}")
         if day != current_day:
-            if current_day is not None:
-                out.append("")
-            out.append(day)
+            groups.append((day, [line]))
             current_day = day
-        out.append(f"{time}: {sign}{amount_str} {currency}")
+        else:
+            groups[-1][1].append(line)
+
+    for day, lines in groups:
+        out.append(_html.escape(day))
+        out.append(
+            f"<blockquote expandable>{chr(10).join(lines)}</blockquote>"
+        )
     return "\n".join(out)
 
 
@@ -293,7 +300,7 @@ async def render_history(
             user_id=panel_user_id,
             text=body,
             reply_markup=keyboard,
-            parse_mode=None,
+            parse_mode="HTML",
             link_preview_options=LinkPreviewOptions(
                 url=pie_url, prefer_large_media=True, show_above_text=True,
             ),
@@ -305,7 +312,7 @@ async def render_history(
             user_id=panel_user_id,
             text=body,
             reply_markup=keyboard,
-            parse_mode=None,
+            parse_mode="HTML",
             disable_web_preview=True,
         )
 
