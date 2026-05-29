@@ -134,7 +134,9 @@ def _history_body(
 
     out: list[str] = []
     if header:
-        out.append(_html.escape(header))
+        # Header содержит свою HTML-разметку (<b>…</b>) и контролируется
+        # нами, поэтому escape не нужен.
+        out.append(header)
 
     if not txs:
         if not header:
@@ -254,19 +256,19 @@ async def render_history(
 
     if lang == "en":
         header = (
-            "For the last 7 days:\n"
+            "<b>History for the last 7 days:</b>\n"
             f"• Deposits ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
             f"• Withdrawals ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
         )
     elif lang == "uk":
         header = (
-            "За останні 7 днів:\n"
+            "<b>Історія за останні 7 днів:</b>\n"
             f"• Депозити ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
             f"• Виводи ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
         )
     else:
         header = (
-            "За последние 7 дней:\n"
+            "<b>История за последние 7 дней:</b>\n"
             f"• Депозиты ({dep_pct:.1f}%): {dep_in_base:.2f} {base_label}\n"
             f"• Выводы ({wd_pct:.1f}%): {wd_in_base:.2f} {base_label}\n"
         )
