@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import logging
+import os
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncConnection
@@ -8,6 +10,17 @@ from app.bot.main import create_bot, create_dispatcher
 from app.db.base import Base
 from app.db.session import engine
 from app.workers.scheduler import create_scheduler
+
+# Initialise logging once at process start. Without this, root logger stays
+# at WARNING and all log.info(...) calls (including wallet-derive diagnostics)
+# silently disappear from journalctl.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+# Silence the noisiest libs so wallet diagnostics aren't drowned out.
+for noisy in ("httpx", "httpcore", "aiogram.event", "apscheduler"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 # Lightweight in-place migrations for additive changes (new columns) so that
