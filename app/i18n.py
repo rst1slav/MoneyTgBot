@@ -288,7 +288,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "crypto.send.title_progress": "📤 Отправление в процессе",
         "crypto.send.pick_coin_title": "📤 Отправить",
         "crypto.send.pick_coin_body": "Выберите валюту, которую хотите отправить:",
-        "crypto.send.min_line": "Минимальная сумма: {amt} TON в любой монете.",
+        "crypto.send.min_line": "Минимальная сумма: <b>{amt} TON</b> в любой монете.",
         "crypto.send.pick_amount_body_line_network": "Сеть отправления: <b>TON</b>",
         "crypto.send.pick_amount_body_line_balance": "Баланс: {emoji} {amt} {sym}",
         "crypto.send.pick_amount_body_line_min": "Минимум: {emoji} <b>{amt} {sym}</b>",

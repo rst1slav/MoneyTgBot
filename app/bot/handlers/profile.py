@@ -1093,10 +1093,6 @@ async def _render_send_pick_coin(
     body_lines.append("")
     body_lines.append(
         t("crypto.send.min_line", lang).format(amt=_format_coin_amount(SEND_MIN_TON))
-        .replace(
-            "Минимальная сумма:",
-            "<b>Минимальная сумма:</b>" if lang == "ru" else "Минимальная сумма:",
-        )
     )
     body_lines.append("")
     body_lines.append(f"<b>{t('crypto.send.pick_coin_body', lang)}</b>")
