@@ -500,16 +500,15 @@ def crypto_main_keyboard(
         right_btn = InlineKeyboardButton(text="➡️", callback_data="crypto:next")
     else:
         right_btn = InlineKeyboardButton(text="🆕", callback_data="crypto:new_menu")
-    # Telegram inline-кнопки не поддерживают custom-фон, поэтому состояние
-    # «выбран как главный» обозначаем сменой эмодзи: зелёный кружок + звезда
-    # → визуальный аналог «green bg with star».
-    fav_text = "🟢⭐" if is_favorite else "⭐"
-    num_text = f"№{position}"
     switcher_row: list[InlineKeyboardButton] = [
         left_btn,
-        InlineKeyboardButton(text=fav_text, callback_data="crypto:fav"),
+        InlineKeyboardButton(
+            text="⭐",
+            callback_data="crypto:fav",
+            style="success" if is_favorite else None,
+        ),
         InlineKeyboardButton(text=label, callback_data="crypto:noop"),
-        InlineKeyboardButton(text=num_text, callback_data="crypto:reorder"),
+        InlineKeyboardButton(text=f"№{position}", callback_data="crypto:reorder"),
         right_btn,
     ]
 
@@ -631,16 +630,16 @@ def crypto_reorder_keyboard(
     rows: list[list[InlineKeyboardButton]] = []
     for idx, (acc_id, short) in enumerate(wallets):
         position = idx + 1
-        addr_prefix = "🟢 " if selected_account_id == acc_id else ""
-        num_prefix = "🟢 " if selected_position == position else ""
         rows.append([
             InlineKeyboardButton(
-                text=f"{addr_prefix}{t('crypto.reorder.wallet_short', lang)} ({short})",
+                text=f"{t('crypto.reorder.wallet_short', lang)} ({short})",
                 callback_data=f"crypto:reorder_addr:{acc_id}",
+                style="success" if selected_account_id == acc_id else None,
             ),
             InlineKeyboardButton(
-                text=f"{num_prefix}№{position}",
+                text=f"№{position}",
                 callback_data=f"crypto:reorder_num:{position}",
+                style="success" if selected_position == position else None,
             ),
         ])
     rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")])

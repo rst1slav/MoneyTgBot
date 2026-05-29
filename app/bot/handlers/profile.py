@@ -2011,21 +2011,28 @@ async def crypto_callback(callback: CallbackQuery) -> None:
                 except TelegramBadRequest:
                     pass
                 return
-            # Делаем свап позиций.
-            src = next((a for a in accounts if a.id == selected_id), None)
-            dst = next((a for a in accounts if (a.sort_order or 0) == target_pos), None)
+            # Работаем с ВИДИМЫМ порядком (как отдаёт get_active_accounts_by_type).
+            # Берём список, вынимаем выбранный кошелёк, вставляем в target_pos-1,
+            # затем переписываем sort_order 1..N всем подряд. Это переживает
+            # ситуацию, когда у части аккаунтов sort_order=0 после миграции.
+            current = list(accounts)
+            src = next((a for a in current if a.id == selected_id), None)
             if src is None:
                 _pending_reorder_pick.pop(uid, None)
                 return
-            if dst is None or dst.id == src.id:
-                # Просто перемещаем выбранный на нужную позицию (нет коллизии).
-                src.sort_order = target_pos
-            else:
-                src_order = src.sort_order or 0
-                src.sort_order = target_pos
-                dst.sort_order = src_order
+            current.remove(src)
+            target_pos = max(1, min(target_pos, len(current) + 1))
+            current.insert(target_pos - 1, src)
+            for new_pos, acc in enumerate(current, start=1):
+                acc.sort_order = new_pos
             await db.commit()
             _pending_reorder_pick.pop(uid, None)
+            # После переупорядочивания — обновляем индекс «текущего» кошелька,
+            # чтобы основная панель не показала чужой при выходе из reorder.
+            for i, acc in enumerate(current):
+                if acc.id == src.id:
+                    _current_wallet_idx[uid] = i
+                    break
         try:
             await callback.answer(t("crypto.reorder.swapped", lang))
         except TelegramBadRequest:
