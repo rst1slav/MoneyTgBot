@@ -69,7 +69,7 @@ async def execute_transfer(
     log.info("send: using %s for %s", wallet_cls.__name__, from_address)
 
     try:
-        from tonutils.clients import ToncenterClient
+        from tonutils.clients import TonapiClient
         from tonutils.contracts.wallet.messages import (
             JettonTransferBuilder, TONTransferBuilder,
         )
@@ -77,11 +77,24 @@ async def execute_transfer(
     except Exception as exc:
         raise SendError(f"Зависимости tonutils недоступны: {exc}")
 
-    client = ToncenterClient(network=NetworkGlobalID.MAINNET)
+    # TonapiClient устойчивее к uninit аккаунтам и rate-limit'у чем
+    # ToncenterClient без API-ключа. Он же используется во всём боте для
+    # чтения балансов, так что одна точка отказа.
+    client = TonapiClient(network=NetworkGlobalID.MAINNET)
     try:
         async with client:
             pk = PrivateKey(priv32)
             wallet = wallet_cls.from_private_key(client, pk)
+            # Подтягиваем on-chain состояние, чтобы build_external_message
+            # знал нужен ли state_init для деплоя.
+            try:
+                await wallet.refresh()
+                log.info(
+                    "send: wallet %s state=%s balance=%s",
+                    wallet.address, wallet.state, wallet.info.balance,
+                )
+            except Exception as exc:
+                log.warning("send: wallet.refresh failed: %s", exc)
 
             sym = (symbol or "").upper()
             builders: list[Any] = []
