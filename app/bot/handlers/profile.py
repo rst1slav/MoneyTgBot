@@ -2003,11 +2003,10 @@ async def crypto_callback(callback: CallbackQuery) -> None:
             )
             selected_id = _pending_reorder_pick.get(uid)
             if selected_id is None:
+                # Без выбранного адреса тап на номер ничего не делает — это
+                # запрошенный UX: свап стартует только с адреса.
                 try:
-                    await callback.answer(
-                        t("crypto.reorder.pick_addr", lang).format(n=target_pos),
-                        show_alert=False,
-                    )
+                    await callback.answer()
                 except TelegramBadRequest:
                     pass
                 return
