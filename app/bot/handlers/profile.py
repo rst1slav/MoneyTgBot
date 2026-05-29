@@ -90,7 +90,7 @@ _pending_send_memo: set[int] = set()
 
 # Минимальная сумма перевода на TON-сети — фикс. константа в TON, остальные
 # монеты конвертим по их usd_price.
-SEND_MIN_TON = Decimal("0.0000001")
+SEND_MIN_USD = Decimal("0.1")  # минималка пополнения/отправки в USD-эквиваленте
 # Комиссия: фиксированный USD-эквивалент. $0.25 если оплачивается в той же
 # валюте, что отправляется; $0.35 если в другой (USDT или TON).
 SEND_FEE_USD_SAME = Decimal("0.25")
@@ -1028,12 +1028,17 @@ async def _fetch_wallet_coins(acc) -> tuple[list[dict], Decimal | None]:
 
 
 def _coin_min_amount(symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None) -> Decimal:
-    """Минимум для отправки конкретной монеты. Считается из SEND_MIN_TON по курсу."""
-    if symbol.upper() == "TON":
-        return SEND_MIN_TON
-    if not ton_price or not unit_usd or unit_usd <= 0:
-        return SEND_MIN_TON  # fallback
-    return (SEND_MIN_TON * ton_price / unit_usd).quantize(Decimal("0.0000001"))
+    """Минимум для отправки в данной монете — конвертим SEND_MIN_USD по цене."""
+    sym = symbol.upper()
+    if sym == "TON":
+        unit = ton_price
+    elif sym in {"USDT", "USDC", "DAI"}:
+        unit = Decimal("1")
+    else:
+        unit = unit_usd
+    if not unit or unit <= 0:
+        return SEND_MIN_USD  # дегенеративный fallback (без курса)
+    return (SEND_MIN_USD / unit).quantize(Decimal("0.0000001"))
 
 
 def _coin_fee(
@@ -1124,7 +1129,7 @@ async def _render_send_pick_coin(
         body_lines.append(f"{_coin_emoji(sym)} {name}: {amt_str} {html.escape(sym)}")
     body_lines.append("")
     body_lines.append(
-        t("crypto.send.min_line", lang).format(amt=_format_coin_amount(SEND_MIN_TON))
+        t("crypto.send.min_line", lang).format(amt=_format_coin_amount(SEND_MIN_USD))
     )
     body_lines.append("")
     body_lines.append(f"<b>{t('crypto.send.pick_coin_body', lang)}</b>")
