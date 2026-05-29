@@ -21,6 +21,7 @@ from app.bot.keyboards import (
     crypto_info_keyboard,
     crypto_info_with_copy_keyboard,
     crypto_main_keyboard,
+    crypto_reorder_keyboard,
     crypto_new_wallet_menu_keyboard,
     crypto_rename_keyboard,
     crypto_settings_keyboard,
@@ -69,6 +70,9 @@ _last_generated_seed: dict[int, str] = {}    # user_id → just-generated seed (
 # временно не возвращает котировку, — чтобы стоимость в скобках не пропадала.
 # Ключ — символ монеты в верхнем регистре.
 _last_unit_price_usd: dict[str, Decimal] = {}
+# Промежуточное состояние свапа в экране переупорядочивания.
+# user_id → выбранный account_id (ждём №-нажатие) или None.
+_pending_reorder_pick: dict[int, int] = {}
 
 COINS_PER_PAGE = 8
 COIN_LINKS: dict[str, str] = {
@@ -606,6 +610,8 @@ async def _ensure_first_wallet(db, user_id: int) -> None:
         return
     account = await ton_service.link_wallet(db, user_id, address)
     account.encrypted_secret = _cipher.encrypt(seed)
+    account.is_favorite = True
+    account.sort_order = 1
     await db.commit()
 
 
@@ -940,6 +946,42 @@ async def render_crypto_main(
             lang=lang,
             coin_page=coin_page,
             coin_total_pages=total_pages,
+            is_favorite=bool(accounts[wallet_idx].is_favorite) if accounts else False,
+        ),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_crypto_reorder(
+    *,
+    bot: Bot,
+    chat_id: int,
+    panel_user_id: int,
+    telegram_id: int,
+    username: str | None,
+) -> None:
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, telegram_id, username)
+        lang = getattr(user, "language", "ru") or "ru"
+        accounts = await ledger.get_active_accounts_by_type(
+            db, user.id, AccountType.TON_WALLET,
+        )
+    wallets: list[tuple[int, str]] = [
+        (acc.id, _shorten(acc.external_ref)) for acc in accounts
+    ]
+    selected_id = _pending_reorder_pick.get(panel_user_id)
+    text = (
+        f"<b>{t('crypto.reorder.title', lang)}</b>\n\n"
+        f"{t('crypto.reorder.subtitle', lang)}"
+    )
+    await push_text_panel(
+        bot=bot,
+        chat_id=chat_id,
+        user_id=panel_user_id,
+        text=text,
+        reply_markup=crypto_reorder_keyboard(
+            wallets, lang=lang, selected_account_id=selected_id,
         ),
         parse_mode="HTML",
         disable_web_preview=True,
@@ -1877,6 +1919,121 @@ async def crypto_callback(callback: CallbackQuery) -> None:
             await callback.answer()
         except TelegramBadRequest:
             pass
+        return
+
+    if action == "fav":
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+            accounts = await ledger.get_active_accounts_by_type(
+                db, user.id, AccountType.TON_WALLET,
+            )
+            if not accounts:
+                try:
+                    await callback.answer()
+                except TelegramBadRequest:
+                    pass
+                return
+            idx = max(0, min(_current_wallet_idx.get(uid, 0), len(accounts) - 1))
+            target = accounts[idx]
+            if target.is_favorite:
+                try:
+                    await callback.answer(t("crypto.fav.already", lang))
+                except TelegramBadRequest:
+                    pass
+                return
+            for acc in accounts:
+                acc.is_favorite = (acc.id == target.id)
+            await db.commit()
+        try:
+            await callback.answer(t("crypto.fav.set", lang))
+        except TelegramBadRequest:
+            pass
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
+    if action == "reorder":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        _pending_reorder_pick.pop(uid, None)
+        await _render_crypto_reorder(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
+    if action.startswith("reorder_addr:"):
+        try:
+            acc_id = int(action.split(":", 1)[1])
+        except ValueError:
+            return
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        prev = _pending_reorder_pick.get(uid)
+        if prev is not None and prev != acc_id:
+            # Уже что-то выбрано → второй тап на адрес заменяет выбор, не свапает.
+            pass
+        _pending_reorder_pick[uid] = acc_id
+        try:
+            await callback.answer(t("crypto.reorder.pick_num", lang), show_alert=False)
+        except TelegramBadRequest:
+            pass
+        await _render_crypto_reorder(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
+    if action.startswith("reorder_num:"):
+        try:
+            target_pos = int(action.split(":", 1)[1])
+        except ValueError:
+            return
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+            accounts = await ledger.get_active_accounts_by_type(
+                db, user.id, AccountType.TON_WALLET,
+            )
+            selected_id = _pending_reorder_pick.get(uid)
+            if selected_id is None:
+                try:
+                    await callback.answer(
+                        t("crypto.reorder.pick_addr", lang).format(n=target_pos),
+                        show_alert=False,
+                    )
+                except TelegramBadRequest:
+                    pass
+                return
+            # Делаем свап позиций.
+            src = next((a for a in accounts if a.id == selected_id), None)
+            dst = next((a for a in accounts if (a.sort_order or 0) == target_pos), None)
+            if src is None:
+                _pending_reorder_pick.pop(uid, None)
+                return
+            if dst is None or dst.id == src.id:
+                # Просто перемещаем выбранный на нужную позицию (нет коллизии).
+                src.sort_order = target_pos
+            else:
+                src_order = src.sort_order or 0
+                src.sort_order = target_pos
+                dst.sort_order = src_order
+            await db.commit()
+            _pending_reorder_pick.pop(uid, None)
+        try:
+            await callback.answer(t("crypto.reorder.swapped", lang))
+        except TelegramBadRequest:
+            pass
+        await _render_crypto_reorder(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
         return
 
     if action.startswith("page:"):

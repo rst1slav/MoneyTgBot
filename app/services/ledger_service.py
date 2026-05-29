@@ -110,7 +110,7 @@ class LedgerService:
                     Account.account_type == account_type,
                     Account.is_active.is_(True),
                 )
-            ).order_by(Account.id)
+            ).order_by(Account.sort_order, Account.id)
         )
         return list(rows.scalars().all())
 

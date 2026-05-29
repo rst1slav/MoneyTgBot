@@ -28,6 +28,8 @@ for noisy in ("httpx", "httpcore", "aiogram.event", "apscheduler"):
 # Each entry: (table_name, column_name, sql_type_with_default).
 _PENDING_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("users", "language", "VARCHAR(8) DEFAULT 'ru'"),
+    ("accounts", "is_favorite", "BOOLEAN DEFAULT 0"),
+    ("accounts", "sort_order", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -103,10 +105,51 @@ async def _run_one_time_refresh(conn: AsyncConnection) -> None:
             pass
 
 
+async def _backfill_wallet_ordering(conn: AsyncConnection) -> None:
+    """
+    Для уже существующих TON-кошельков выставляем sort_order по created_at
+    (1..N в порядке создания) и помечаем самый старый is_favorite=1. Идемпотентно
+    — пропускаем юзеров, у кого хотя бы один кошелёк уже размечен (sort_order>0
+    или is_favorite=1).
+    """
+    try:
+        users = (await conn.execute(text(
+            "SELECT DISTINCT user_id FROM accounts WHERE account_type = 'TON_WALLET'"
+        ))).fetchall()
+    except Exception:
+        return
+    for (user_id,) in users:
+        already = (await conn.execute(text(
+            "SELECT 1 FROM accounts WHERE user_id = :u AND account_type = 'TON_WALLET' "
+            "AND (is_favorite = 1 OR sort_order > 0) LIMIT 1"
+        ), {"u": user_id})).first()
+        if already:
+            continue
+        rows = (await conn.execute(text(
+            "SELECT id FROM accounts WHERE user_id = :u AND account_type = 'TON_WALLET' "
+            "ORDER BY created_at ASC, id ASC"
+        ), {"u": user_id})).fetchall()
+        for idx, (acc_id,) in enumerate(rows, start=1):
+            try:
+                await conn.execute(text(
+                    "UPDATE accounts SET sort_order = :s WHERE id = :i"
+                ), {"s": idx, "i": acc_id})
+            except Exception:
+                pass
+        if rows:
+            try:
+                await conn.execute(text(
+                    "UPDATE accounts SET is_favorite = 1 WHERE id = :i"
+                ), {"i": rows[0][0]})
+            except Exception:
+                pass
+
+
 async def init_db(db_engine: AsyncEngine) -> None:
     async with db_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_columns(conn)
+        await _backfill_wallet_ordering(conn)
         await _run_one_time_refresh(conn)
 
 

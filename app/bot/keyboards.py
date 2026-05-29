@@ -477,14 +477,19 @@ def crypto_main_keyboard(
     *,
     coin_page: int = 1,
     coin_total_pages: int = 1,
+    is_favorite: bool = False,
 ) -> InlineKeyboardMarkup:
     if wallets and 0 <= current_idx < len(wallets):
         label = wallets[current_idx][1]
         has_prev = current_idx > 0
         has_next = current_idx < len(wallets) - 1
+        position = current_idx + 1
+        total = len(wallets)
     else:
         label = "—"
         has_prev = has_next = False
+        position = 1
+        total = 0
 
     # Wallet switcher: empty arrow slots collapse into the "🆕 add wallet" button.
     if has_prev:
@@ -495,9 +500,16 @@ def crypto_main_keyboard(
         right_btn = InlineKeyboardButton(text="➡️", callback_data="crypto:next")
     else:
         right_btn = InlineKeyboardButton(text="🆕", callback_data="crypto:new_menu")
+    # Telegram inline-кнопки не поддерживают custom-фон, поэтому состояние
+    # «выбран как главный» обозначаем сменой эмодзи: зелёный кружок + звезда
+    # → визуальный аналог «green bg with star».
+    fav_text = "🟢⭐" if is_favorite else "⭐"
+    num_text = f"№{position}"
     switcher_row: list[InlineKeyboardButton] = [
         left_btn,
+        InlineKeyboardButton(text=fav_text, callback_data="crypto:fav"),
         InlineKeyboardButton(text=label, callback_data="crypto:noop"),
+        InlineKeyboardButton(text=num_text, callback_data="crypto:reorder"),
         right_btn,
     ]
 
@@ -602,6 +614,37 @@ def crypto_import_prompt_keyboard(lang: str = "ru", *, back_to: str = "crypto:ne
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=t("back", lang), callback_data=back_to)]]
     )
+
+
+def crypto_reorder_keyboard(
+    wallets: list[tuple[int, str]],   # (account_id, short label) in current sort order
+    lang: str = "ru",
+    *,
+    selected_account_id: int | None = None,
+    selected_position: int | None = None,
+) -> InlineKeyboardMarkup:
+    """
+    Экран переупорядочивания кошельков. Каждая строка — две кнопки:
+    [Кошелёк (UQB…kokQ)]   [№N]
+    Если что-то выбрано — подсвечиваем зелёным кружком.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, (acc_id, short) in enumerate(wallets):
+        position = idx + 1
+        addr_prefix = "🟢 " if selected_account_id == acc_id else ""
+        num_prefix = "🟢 " if selected_position == position else ""
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{addr_prefix}{t('crypto.reorder.wallet_short', lang)} ({short})",
+                callback_data=f"crypto:reorder_addr:{acc_id}",
+            ),
+            InlineKeyboardButton(
+                text=f"{num_prefix}№{position}",
+                callback_data=f"crypto:reorder_num:{position}",
+            ),
+        ])
+    rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def crypto_create_success_keyboard(lang: str = "ru", *, seed: str = "") -> InlineKeyboardMarkup:

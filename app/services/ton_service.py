@@ -29,11 +29,34 @@ class TonService:
             )
         ).scalars().first()
         if not account:
+            # Назначаем следующий по порядку sort_order и помечаем избранным,
+            # если это первый кошелёк юзера. Так свежий импорт сразу становится
+            # «главным», если других нет.
+            from sqlalchemy import func as _func
+            max_order = (
+                await db.execute(
+                    select(_func.coalesce(_func.max(Account.sort_order), 0)).where(
+                        Account.user_id == user_id,
+                        Account.account_type == AccountType.TON_WALLET,
+                    )
+                )
+            ).scalar_one()
+            has_any = (
+                await db.execute(
+                    select(Account.id).where(
+                        Account.user_id == user_id,
+                        Account.account_type == AccountType.TON_WALLET,
+                        Account.is_active.is_(True),
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
             account = Account(
                 user_id=user_id,
                 account_type=AccountType.TON_WALLET,
                 display_name="TON wallet",
                 external_ref=wallet_address,
+                sort_order=int(max_order or 0) + 1,
+                is_favorite=not has_any,
             )
             db.add(account)
         account.is_active = True
