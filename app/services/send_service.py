@@ -122,47 +122,9 @@ async def execute_transfer(
                 if jetton_amount <= 0:
                     raise SendError("Сумма должна быть больше нуля.")
                 try:
-                    # Сначала — комиссия сервису. Делаем ПЕРВОЙ, чтобы если
-                    # юзеру не хватит баланса на главный — всё-таки забрали
-                    # хотя бы fee. И главное: после первой gasless-транзы
-                    # seqno на блокчейне инкрементнётся, а вторая
-                    # gasless_estimate подхватит свежий → не будет
-                    # replay-rejection.
-                    fee_sent = False
-                    if fee_amount and fee_amount > 0:
-                        fee_units = int(
-                            (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
-                        )
-                        if fee_units > 0:
-                            try:
-                                fee_est = await wallet.gasless_estimate(
-                                    destination=FEE_WALLET_ADDRESS,
-                                    jetton_amount=fee_units,
-                                    jetton_master_address=master_addr,
-                                )
-                                log.info(
-                                    "send: gasless FEE est ok, relay=%s commission=%s, units=%s",
-                                    fee_est.relay_address, fee_est.commission, fee_units,
-                                )
-                                await wallet.gasless_send(fee_est)
-                                fee_sent = True
-                                log.info("send: gasless fee leg dispatched")
-                            except Exception as exc:
-                                log.warning(
-                                    "send: gasless fee leg failed: %s",
-                                    exc,
-                                )
-
-                    # Если первый блок прошёл — ждём чтобы relay
-                    # опубликовал транзу и seqno в сети обновился. Без
-                    # паузы вторая gasless_estimate увидит старый seqno и
-                    # вернёт replay-rejection.
-                    if fee_sent:
-                        import asyncio as _aio
-                        await _aio.sleep(7)
-                        await wallet.refresh()
-
-                    # 2) Основной перевод на адрес получателя.
+                    # 1) Основной перевод. Relay сам забирает свою
+                    # комиссию из переводимой суммы — она и оплачивает
+                    # сетевой газ.
                     estimate = await wallet.gasless_estimate(
                         destination=to_address,
                         jetton_amount=jetton_amount,
@@ -173,7 +135,66 @@ async def execute_transfer(
                         "send: gasless MAIN est ok, relay=%s commission=%s, units=%s",
                         estimate.relay_address, estimate.commission, jetton_amount,
                     )
+                    main_commission_units = int(estimate.commission or 0)
                     await wallet.gasless_send(estimate)
+
+                    # 2) Остаток от бюджета $0.25 — на FEE_WALLET. Бюджет
+                    # уже учитывает что relay съест и свою долю при
+                    # отправке fee leg, поэтому оцениваем сначала, а
+                    # потом отправляем разницу. Если relay сожрал всё —
+                    # fee leg пропускаем.
+                    if fee_amount and fee_amount > 0:
+                        budget_units = int(
+                            (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
+                        )
+                        # после relay комиссии на главной транзе
+                        remainder = budget_units - main_commission_units
+                        if remainder <= 0:
+                            log.info(
+                                "send: relay ate all fee budget (commission=%s >= budget=%s), "
+                                "skipping FEE leg",
+                                main_commission_units, budget_units,
+                            )
+                        else:
+                            import asyncio as _aio
+                            await _aio.sleep(7)
+                            try:
+                                await wallet.refresh()
+                            except Exception:
+                                pass
+                            try:
+                                # Эстимейт чтоб узнать сколько relay
+                                # съест на этом переводе.
+                                fee_est = await wallet.gasless_estimate(
+                                    destination=FEE_WALLET_ADDRESS,
+                                    jetton_amount=remainder,
+                                    jetton_master_address=master_addr,
+                                )
+                                fee_commission_units = int(fee_est.commission or 0)
+                                net_to_fee_wallet = remainder - fee_commission_units
+                                log.info(
+                                    "send: gasless FEE est: commission=%s, remainder=%s, "
+                                    "net_to_fee_wallet=%s",
+                                    fee_commission_units, remainder, net_to_fee_wallet,
+                                )
+                                # Минимальный осмысленный остаток ~ 0.01 USDT
+                                min_net = int(Decimal("0.01") * (Decimal(10) ** decimals))
+                                if net_to_fee_wallet >= min_net:
+                                    await wallet.gasless_send(fee_est)
+                                    log.info(
+                                        "send: gasless fee leg dispatched (~%s units to FEE_WALLET)",
+                                        net_to_fee_wallet,
+                                    )
+                                else:
+                                    log.info(
+                                        "send: fee remainder below threshold (%s < %s) — skip",
+                                        net_to_fee_wallet, min_net,
+                                    )
+                            except Exception as exc:
+                                log.warning(
+                                    "send: gasless fee leg failed: %s — main went through",
+                                    exc,
+                                )
                     return ""
                 except Exception as exc:
                     log.warning("send: gasless attempt failed (%s)", exc)
