@@ -1399,6 +1399,10 @@ async def _execute_send(
         fee_amount = coin.get("fee_amt") or Decimal("0")
         if coin.get("fee_sym") != sym:
             fee_amount = Decimal("0")  # batch требует одну валюту
+        log_.info(
+            "send fee plan: sym=%s amount=%s fee_amt=%s fee_sym=%s",
+            sym, amount, fee_amount, coin.get("fee_sym"),
+        )
 
         from app.services.send_service import execute_transfer, SendError
         try:

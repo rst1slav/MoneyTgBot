@@ -133,10 +133,20 @@ async def execute_transfer(
             # Batch — обе message'и в одной внешней транзакции, атомарно.
             # Если builders ровно один (комиссии нет) — это эквивалентно
             # обычному transfer_message.
+            log.info(
+                "send: building %d builders, sym=%s amount=%s fee=%s",
+                len(builders), sym, amount, fee_amount,
+            )
+            for i, b in enumerate(builders):
+                log.info("  builder[%d] = %s", i, type(b).__name__)
             if len(builders) == 1:
                 msg = await wallet.transfer_message(builders[0])
             else:
                 msg = await wallet.batch_transfer_message(builders)
+            log.info("send: external msg sent, hash=%s",
+                     getattr(msg, "normalized_hash", b"").hex()
+                     if isinstance(getattr(msg, "normalized_hash", None), (bytes, bytearray))
+                     else None)
 
             tx_hash = getattr(msg, "normalized_hash", None)
             if tx_hash is None:
