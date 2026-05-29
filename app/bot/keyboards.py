@@ -207,11 +207,11 @@ def settings_timezone_keyboard(
     for pair in pairs:
         row: list[InlineKeyboardButton] = []
         for key, tz in pair:
-            mark = "✓ " if current == tz else ""
             label = t(key, lang) if key else "UTC"
             row.append(InlineKeyboardButton(
-                text=f"{mark}{label}",
+                text=label,
                 callback_data=f"set:tz_pick:{tz}",
+                style="success" if current == tz else None,
             ))
         rows.append(row)
     rows.append([InlineKeyboardButton(text=t("settings.tz_custom_btn", lang), callback_data="set:tz_custom")])
@@ -231,8 +231,11 @@ def settings_language_keyboard(
 ) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
     for label, code in _LANGUAGES:
-        mark = "✓ " if current == code else ""
-        row.append(InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"set:lang_pick:{code}"))
+        row.append(InlineKeyboardButton(
+            text=label,
+            callback_data=f"set:lang_pick:{code}",
+            style="success" if current == code else None,
+        ))
     return InlineKeyboardMarkup(
         inline_keyboard=[
             row,
@@ -252,8 +255,11 @@ def settings_currency_keyboard(
     for i in range(0, len(_SETTINGS_CURRENCIES), chunk):
         row: list[InlineKeyboardButton] = []
         for ccy in _SETTINGS_CURRENCIES[i:i + chunk]:
-            mark = "✓ " if current == ccy else ""
-            row.append(InlineKeyboardButton(text=f"{mark}{ccy}", callback_data=f"set:ccy_pick:{ccy}"))
+            row.append(InlineKeyboardButton(
+                text=ccy,
+                callback_data=f"set:ccy_pick:{ccy}",
+                style="success" if current == ccy else None,
+            ))
         rows.append(row)
     rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="set:open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
