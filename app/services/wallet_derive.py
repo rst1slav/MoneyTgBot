@@ -126,34 +126,62 @@ def derive_all_candidates(seed: str) -> list[str]:
 async def find_active_address(candidates: list[str]) -> str | None:
     """
     Возвращает первый адрес, у которого реально есть состояние на mainnet:
-    активный контракт, баланс > 0, или ненулевые жетоны.
+    активный/frozen контракт, баланс > 0, ненулевые жетоны или хотя бы одна
+    транзакция в истории. Подробно логирует каждый шаг — без логов
+    диагностировать «адрес есть, баланса нет» практически невозможно.
     """
     if not candidates:
         return None
-    async with httpx.AsyncClient(timeout=10) as client:
+    headers = {"User-Agent": "MoneyTgBot/1.0 (+wallet-derive)"}
+    async with httpx.AsyncClient(timeout=15, headers=headers) as client:
         for addr in candidates:
+            # 1. Базовый аккаунт
             try:
                 r = await client.get(
-                    f"https://tonapi.io/v2/blockchain/accounts/{addr}"
+                    f"https://tonapi.io/v2/accounts/{addr}"
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    status = data.get("status", "")
-                    bal = int(data.get("balance", 0))
-                    if status == "active" or bal > 0:
+                    status = (data.get("status") or "").lower()
+                    bal = int(data.get("balance", 0) or 0)
+                    log.info(
+                        "tonapi[%s] status=%s balance=%s",
+                        addr[:12], status, bal,
+                    )
+                    if status in {"active", "frozen"} or bal > 0:
                         return addr
-            except Exception:
-                pass
+                else:
+                    log.info("tonapi[%s] HTTP %s", addr[:12], r.status_code)
+            except Exception as exc:
+                log.info("tonapi[%s] account check failed: %s", addr[:12], exc)
+            # 2. Жетоны — для W5R1, который ещё uninit, но USDT уже лежит
             try:
                 r = await client.get(
                     f"https://tonapi.io/v2/accounts/{addr}/jettons"
                 )
                 if r.status_code == 200:
                     balances = r.json().get("balances") or []
-                    if any(int(b.get("balance", 0)) > 0 for b in balances):
+                    jet_count = sum(
+                        1 for b in balances if int(b.get("balance", 0) or 0) > 0
+                    )
+                    if jet_count > 0:
+                        log.info("tonapi[%s] jettons=%s → match", addr[:12], jet_count)
                         return addr
-            except Exception:
-                pass
+            except Exception as exc:
+                log.info("tonapi[%s] jettons check failed: %s", addr[:12], exc)
+            # 3. История — даже у frozen/nonexist кошелька может быть прошлая активность
+            try:
+                r = await client.get(
+                    f"https://tonapi.io/v2/blockchain/accounts/{addr}/transactions",
+                    params={"limit": 1},
+                )
+                if r.status_code == 200:
+                    txs = r.json().get("transactions") or []
+                    if txs:
+                        log.info("tonapi[%s] has history → match", addr[:12])
+                        return addr
+            except Exception as exc:
+                log.info("tonapi[%s] tx check failed: %s", addr[:12], exc)
     return None
 
 

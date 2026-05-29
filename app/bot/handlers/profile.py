@@ -2631,6 +2631,24 @@ async def profile_crypto_seed_input(message: Message) -> None:
             await db.commit()
             _pending_crypto_seed_only.discard(uid)
             _profile_snapshot_cache.pop(user.id, None)
+            # Сразу подтягиваем историю и считаем баланс, чтобы юзер сразу
+            # увидел данные, а не пустой экран.
+            import logging as _logging
+            _slog = _logging.getLogger(__name__)
+            try:
+                inserted = await ton_service.sync_transactions(db, account)
+                _slog.info("Seed import sync: address=%s, txs=%d", address, inserted)
+            except Exception as exc:
+                _slog.warning("Seed import sync failed for %s: %s", address, exc)
+            try:
+                live_bal = await ton_service.get_live_balance_ton(account)
+                jets = await ton_service.get_jettons_detailed(account)
+                _slog.info(
+                    "Seed import balance: address=%s, TON=%s, jettons=%d",
+                    address, live_bal, len(jets),
+                )
+            except Exception as exc:
+                _slog.warning("Seed import balance fetch failed: %s", exc)
             # Удаляем сообщение пользователя с seed-фразой — она не должна
             # оставаться в чате в открытом виде.
             try:
