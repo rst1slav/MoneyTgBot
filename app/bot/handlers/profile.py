@@ -22,6 +22,12 @@ from app.bot.keyboards import (
     crypto_info_with_copy_keyboard,
     crypto_main_keyboard,
     crypto_reorder_keyboard,
+    crypto_send_addr_keyboard,
+    crypto_send_amount_keyboard,
+    crypto_send_coins_keyboard,
+    crypto_send_confirm_keyboard,
+    crypto_send_memo_keyboard,
+    crypto_send_processing_keyboard,
     crypto_new_wallet_menu_keyboard,
     crypto_rename_keyboard,
     crypto_settings_keyboard,
@@ -73,6 +79,20 @@ _last_unit_price_usd: dict[str, Decimal] = {}
 # Промежуточное состояние свапа в экране переупорядочивания.
 # user_id → выбранный account_id (ждём №-нажатие) или None.
 _pending_reorder_pick: dict[int, int] = {}
+
+# Send-flow state. Один объект на юзера, на каждом шаге обновляется.
+# Поля: wallet_id, symbol, balance, min_amt, fee, amount, address, memo, step.
+_send_state: dict[int, dict] = {}
+_send_coin_page: dict[int, int] = {}
+_pending_send_amount: set[int] = set()
+_pending_send_addr: set[int] = set()
+_pending_send_memo: set[int] = set()
+
+# Минимальная сумма перевода на TON-сети — фикс. константа в TON, остальные
+# монеты конвертим по их usd_price.
+SEND_MIN_TON = Decimal("0.0000001")
+SEND_FEE_TON_NATIVE = Decimal("0.05")       # network fee для TonTransfer
+SEND_FEE_JETTON_GAS_TON = Decimal("0.1")    # gas-резерв для JettonTransfer
 
 COINS_PER_PAGE = 8
 COIN_LINKS: dict[str, str] = {
@@ -622,6 +642,16 @@ def _wallet_display_name(acc, lang: str) -> str:
     return t("crypto.my_wallet", lang)
 
 
+def _coin_emoji(symbol: str | None) -> str:
+    """Эмодзи для монеты в тексте: 💎 TON, 💵 USDT/USDC, 🪙 остальные."""
+    s = (symbol or "").upper()
+    if s == "TON":
+        return "💎"
+    if s in {"USDT", "USDC", "USD₮", "DAI", "BUSD", "TUSD"}:
+        return "💵"
+    return "🪙"
+
+
 def _format_coin_amount(amount: Decimal) -> str:
     """Format coin balance: trim trailing zeros, keep up to 9 significant decimals."""
     q = amount.quantize(Decimal("0.000000001"))
@@ -925,7 +955,7 @@ async def render_crypto_main(
             bold_name = f"<b>{sym_escaped}</b>"
             name_part = f'<a href="{link}">{bold_name}</a>' if link else bold_name
             amt_str = _format_coin_amount(c["amount"])
-            line = f"🪙 {name_part}: {amt_str} {sym_escaped}"
+            line = f"{_coin_emoji(sym)} {name_part}: {amt_str} {sym_escaped}"
             if c["usd_value"] is not None:
                 in_base, lbl = _convert_usd_to_base(
                     c["usd_value"], base_ccy, base_per_usd,
@@ -951,6 +981,413 @@ async def render_crypto_main(
         parse_mode="HTML",
         disable_web_preview=True,
     )
+
+
+async def _fetch_wallet_coins(acc) -> tuple[list[dict], Decimal | None]:
+    """
+    Возвращает (coins, ton_price_usd). coins — список dict с полями:
+      symbol, amount (Decimal), usd_value (Decimal|None), unit_usd (Decimal|None)
+    Используется и в send-flow, и в render_crypto_main.
+    """
+    try:
+        ton_bal, jets, ton_price = await asyncio.gather(
+            ton_service.get_live_balance_ton(acc),
+            ton_service.get_jettons_detailed(acc),
+            ton_service.ton_price_usd(),
+        )
+    except Exception:
+        ton_bal, jets, ton_price = None, [], None
+
+    ton_amount = ton_bal if ton_bal is not None else Decimal("0")
+    coins: list[dict] = [{
+        "symbol": "TON",
+        "amount": ton_amount,
+        "usd_value": (ton_amount * ton_price) if ton_price else None,
+        "unit_usd": ton_price,
+    }]
+    for jet in jets:
+        sym = (jet["symbol"] or "").upper().replace("₮", "T")
+        unit = None
+        if jet["amount"] and jet["amount"] > 0 and jet["usd_value"] is not None:
+            try:
+                unit = jet["usd_value"] / jet["amount"]
+            except Exception:
+                unit = None
+        coins.append({
+            "symbol": sym or "?",
+            "amount": jet["amount"],
+            "usd_value": jet["usd_value"],
+            "unit_usd": unit,
+        })
+    return coins, ton_price
+
+
+def _coin_min_amount(symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None) -> Decimal:
+    """Минимум для отправки конкретной монеты. Считается из SEND_MIN_TON по курсу."""
+    if symbol.upper() == "TON":
+        return SEND_MIN_TON
+    if not ton_price or not unit_usd or unit_usd <= 0:
+        return SEND_MIN_TON  # fallback
+    return (SEND_MIN_TON * ton_price / unit_usd).quantize(Decimal("0.0000001"))
+
+
+def _coin_fee(symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None) -> tuple[Decimal, str]:
+    """
+    (fee_amount, fee_symbol). Для TON — 0.05 TON. Для жетонов — 0.1 TON в TON.
+    Возвращаем именно в TON, т.к. жетоны платят газ в TON.
+    """
+    if symbol.upper() == "TON":
+        return SEND_FEE_TON_NATIVE, "TON"
+    return SEND_FEE_JETTON_GAS_TON, "TON"
+
+
+async def _render_send_pick_coin(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+) -> None:
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+        accounts = await ledger.get_active_accounts_by_type(
+            db, user.id, AccountType.TON_WALLET,
+        )
+    if not accounts:
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+    idx = max(0, min(_current_wallet_idx.get(uid, 0), len(accounts) - 1))
+    acc = accounts[idx]
+    coins, ton_price = await _fetch_wallet_coins(acc)
+
+    # Фильтр: только то, что покрывает минимум + комиссию.
+    available: list[dict] = []
+    for c in coins:
+        if not c["amount"] or c["amount"] <= 0:
+            continue
+        min_amt = _coin_min_amount(c["symbol"], c["unit_usd"], ton_price)
+        fee_amt, fee_sym = _coin_fee(c["symbol"], c["unit_usd"], ton_price)
+        # Чтобы вывести жетон — нужен ещё TON-газ. Не отсекаем тут (это проверим
+        # при выборе), но минимум по самому жетону должен влезать.
+        if c["amount"] >= min_amt:
+            available.append({
+                **c,
+                "min_amt": min_amt,
+                "fee_amt": fee_amt,
+                "fee_sym": fee_sym,
+            })
+    available.sort(key=lambda x: (x["usd_value"] or Decimal("0")), reverse=True)
+
+    body_lines: list[str] = [f"<b>{t('crypto.send.title', lang)}</b>", ""]
+    for c in available:
+        sym = c["symbol"]
+        amt_str = _format_coin_amount(c["amount"])
+        link = COIN_LINKS.get(sym.upper())
+        name = f'<a href="{link}"><b>{html.escape(sym)}</b></a>' if link else f"<b>{html.escape(sym)}</b>"
+        base_extra = ""
+        if c["usd_value"] is not None:
+            # Конвертация в базовую валюту юзера сделана в основной панели,
+            # тут используем простой fallback в UAH через USD.
+            pass
+        body_lines.append(f"{_coin_emoji(sym)} {name}: {amt_str} {html.escape(sym)}")
+    body_lines.append("")
+    body_lines.append(
+        t("crypto.send.min_line", lang).format(amt=_format_coin_amount(SEND_MIN_TON))
+        .replace(
+            "Минимальная сумма:",
+            "<b>Минимальная сумма:</b>" if lang == "ru" else "Минимальная сумма:",
+        )
+    )
+    body_lines.append("")
+    body_lines.append(f"<b>{t('crypto.send.pick_coin_body', lang)}</b>")
+
+    if not available:
+        body_lines = [
+            f"<b>{t('crypto.send.title', lang)}</b>",
+            "",
+            t("crypto.send.no_coins", lang),
+        ]
+
+    coin_buttons: list[tuple[str, str]] = [
+        (c["symbol"], f"{_coin_emoji(c['symbol'])} {c['symbol']}")
+        for c in available
+    ]
+    per_page = 9
+    total_pages = max(1, (len(coin_buttons) + per_page - 1) // per_page)
+    page = _send_coin_page.get(uid, 1)
+    page = max(1, min(page, total_pages))
+    _send_coin_page[uid] = page
+
+    # Сохраняем «прайс-лист» в state чтобы потом на следующих шагах не
+    # пересчитывать.
+    _send_state[uid] = {
+        **(_send_state.get(uid, {})),
+        "wallet_id": acc.id,
+        "coins": {c["symbol"]: c for c in available},
+        "ton_price": ton_price,
+    }
+
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text="\n".join(body_lines),
+        reply_markup=crypto_send_coins_keyboard(
+            coin_buttons, page=page, total_pages=total_pages, lang=lang,
+        ),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_send_amount(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+    insufficient: bool = False,
+) -> None:
+    state = _send_state.get(uid) or {}
+    sym = state.get("symbol")
+    if not sym:
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+    coin = (state.get("coins") or {}).get(sym)
+    if not coin:
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+
+    bal_str = _format_coin_amount(coin["amount"])
+    min_str = _format_coin_amount(coin["min_amt"])
+    fee_str = _format_coin_amount(coin["fee_amt"])
+    emoji = _coin_emoji(sym)
+    fee_emoji = _coin_emoji(coin["fee_sym"])
+
+    lines = [
+        f"<b>{t('crypto.send.title', lang)}</b>",
+        "",
+        t("crypto.send.pick_amount_body_line_network", lang),
+        "",
+        t("crypto.send.pick_amount_body_line_balance", lang).format(
+            emoji=emoji, amt=bal_str, sym=sym,
+        ),
+        "",
+        t("crypto.send.pick_amount_body_line_min", lang).format(
+            emoji=emoji, amt=min_str, sym=sym,
+        ),
+        "",
+        t("crypto.send.pick_amount_body_line_fee", lang).format(
+            emoji=fee_emoji, amt=fee_str, sym=coin["fee_sym"],
+        ),
+        "",
+    ]
+    # Считаем "максимум для отправки" с учётом комиссии (если та в той же монете).
+    if coin["fee_sym"] == sym:
+        max_amt = max(Decimal("0"), coin["amount"] - coin["fee_amt"])
+    else:
+        max_amt = coin["amount"]
+    max_str = _format_coin_amount(max_amt)
+    enabled = max_amt >= coin["min_amt"]
+    if insufficient or not enabled:
+        lines.append(
+            t("crypto.send.insufficient", lang).format(
+                emoji=emoji, sym=sym,
+                min_amt=_format_coin_amount(coin["min_amt"] + (coin["fee_amt"] if coin["fee_sym"] == sym else Decimal("0"))),
+            )
+        )
+    else:
+        lines.append(t("crypto.send.enter_amount", lang))
+
+    _pending_send_amount.add(uid)
+    _pending_send_addr.discard(uid)
+    _pending_send_memo.discard(uid)
+
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text="\n".join(lines),
+        reply_markup=crypto_send_amount_keyboard(
+            max_amount=max_str, symbol=sym, lang=lang, enabled=enabled,
+        ),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_send_addr(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+) -> None:
+    state = _send_state.get(uid) or {}
+    sym = state.get("symbol")
+    amount = state.get("amount")
+    coin = (state.get("coins") or {}).get(sym) if sym else None
+    if not sym or amount is None or not coin:
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+    amt_str = _format_coin_amount(amount)
+    fee_str = _format_coin_amount(coin["fee_amt"])
+    emoji = _coin_emoji(sym)
+    fee_emoji = _coin_emoji(coin["fee_sym"])
+    lines = [
+        f"<b>{t('crypto.send.title', lang)}</b>",
+        "",
+        t("crypto.send.pick_amount_body_line_network", lang),
+        "",
+        t("crypto.send.amount_line", lang).format(emoji=emoji, amt=amt_str, sym=sym),
+        t("crypto.send.pick_amount_body_line_fee", lang).format(
+            emoji=fee_emoji, amt=fee_str, sym=coin["fee_sym"],
+        ),
+        "",
+        t("crypto.send.enter_addr", lang),
+    ]
+    _pending_send_amount.discard(uid)
+    _pending_send_addr.add(uid)
+    _pending_send_memo.discard(uid)
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text="\n".join(lines),
+        reply_markup=crypto_send_addr_keyboard(lang=lang),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_send_confirm(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+) -> None:
+    state = _send_state.get(uid) or {}
+    sym = state.get("symbol")
+    amount = state.get("amount")
+    address = state.get("address")
+    coin = (state.get("coins") or {}).get(sym) if sym else None
+    if not all([sym, amount, address, coin]):
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+
+    amt_str = _format_coin_amount(amount)
+    fee_str = _format_coin_amount(coin["fee_amt"])
+    emoji = _coin_emoji(sym)
+    fee_emoji = _coin_emoji(coin["fee_sym"])
+    short_addr = _shorten(address)
+    tonviewer = f"https://tonviewer.com/{address}"
+    lines = [
+        f"<b>{t('crypto.send.title', lang)}</b>",
+        "",
+        t("crypto.send.pick_amount_body_line_network", lang),
+        "",
+        t("crypto.send.amount_line", lang).format(emoji=emoji, amt=amt_str, sym=sym),
+        t("crypto.send.pick_amount_body_line_fee", lang).format(
+            emoji=fee_emoji, amt=fee_str, sym=coin["fee_sym"],
+        ),
+        "",
+        t("crypto.send.addr_line", lang).format(
+            url=tonviewer, short=html.escape(short_addr),
+        ),
+    ]
+    memo = state.get("memo")
+    if memo:
+        lines.append("")
+        lines.append(t("crypto.send.memo_line", lang).format(memo=html.escape(memo)))
+    lines.append("")
+    lines.append(t("crypto.send.confirm_title", lang))
+
+    _pending_send_amount.discard(uid)
+    _pending_send_addr.discard(uid)
+    _pending_send_memo.discard(uid)
+
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text="\n".join(lines),
+        reply_markup=crypto_send_confirm_keyboard(lang=lang),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_send_memo(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+) -> None:
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+    _pending_send_amount.discard(uid)
+    _pending_send_addr.discard(uid)
+    _pending_send_memo.add(uid)
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text=f"<b>{t('crypto.send.memo_title', lang)}</b>\n\n{t('crypto.send.memo_body', lang)}",
+        reply_markup=crypto_send_memo_keyboard(lang=lang),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _render_send_processing(
+    *, bot, chat_id: int, uid: int, uname: str | None,
+) -> None:
+    state = _send_state.get(uid) or {}
+    sym = state.get("symbol")
+    amount = state.get("amount")
+    address = state.get("address")
+    if not all([sym, amount, address]):
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+    short_addr = _shorten(address)
+    tonviewer = f"https://tonviewer.com/{address}"
+    text = (
+        f"<b>{t('crypto.send.title_progress', lang)}</b>\n\n"
+        + t("crypto.send.processing_body_html", lang).format(
+            emoji=_coin_emoji(sym), amt=_format_coin_amount(amount),
+            sym=sym, url=tonviewer, short=html.escape(short_addr),
+        )
+    )
+    await push_text_panel(
+        bot=bot, chat_id=chat_id, user_id=uid,
+        text=text,
+        reply_markup=crypto_send_processing_keyboard(lang=lang),
+        parse_mode="HTML",
+        disable_web_preview=True,
+    )
+
+
+async def _execute_send(
+    *, bot, uid: int, uname: str | None,
+) -> None:
+    """
+    Реальная отправка средств. Сейчас — заглушка: ждём 5 секунд и шлём
+    в чат уведомление об успешном завершении с фейковой ссылкой. Логика
+    подписи через сохранённый seed + tonutils — TODO следующего коммита.
+    """
+    state = _send_state.get(uid) or {}
+    sym = state.get("symbol")
+    amount = state.get("amount")
+    address = state.get("address")
+    if not all([sym, amount, address]):
+        return
+    # Дадим UI обновиться, имитируем отправку.
+    await asyncio.sleep(5)
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+    fake_tx = "0" * 64  # TODO: реальный хеш транзакции после подписи
+    tonviewer = f"https://tonviewer.com/transaction/{fake_tx}"
+    text = t("crypto.send.done_notify_html", lang).format(
+        url=tonviewer, amt=_format_coin_amount(amount), sym=sym, base="",
+    )
+    try:
+        await bot.send_message(
+            chat_id=uid, text=text, parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+    _send_state.pop(uid, None)
 
 
 async def _render_crypto_reorder(
@@ -2589,7 +3026,86 @@ async def crypto_callback(callback: CallbackQuery) -> None:
 
     # Кнопка "Связаться с поддержкой" теперь URL-кнопка → callback не приходит.
 
-    if action == "withdraw":
+    if action == "withdraw" or action == "send_start":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        # При входе в flow сбрасываем выбор монеты и предыдущие шаги,
+        # но сохраняем wallet_id (он привязан к текущему индексу).
+        if action == "withdraw":
+            _send_state.pop(uid, None)
+        else:
+            st = _send_state.get(uid, {})
+            st.pop("symbol", None)
+            st.pop("amount", None)
+            st.pop("address", None)
+            st.pop("memo", None)
+            _send_state[uid] = st
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action.startswith("send_coin_page:"):
+        try:
+            _send_coin_page[uid] = int(action.split(":", 1)[1])
+        except ValueError:
+            return
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action.startswith("send_coin:"):
+        sym = action.split(":", 1)[1]
+        st = _send_state.get(uid) or {}
+        if sym not in (st.get("coins") or {}):
+            try:
+                await callback.answer()
+            except TelegramBadRequest:
+                pass
+            return
+        st["symbol"] = sym
+        st.pop("amount", None)
+        st.pop("address", None)
+        st.pop("memo", None)
+        _send_state[uid] = st
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_amount(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action == "send_max":
+        st = _send_state.get(uid) or {}
+        sym = st.get("symbol")
+        coin = (st.get("coins") or {}).get(sym) if sym else None
+        if not coin:
+            return
+        if coin["fee_sym"] == sym:
+            max_amt = max(Decimal("0"), coin["amount"] - coin["fee_amt"])
+        else:
+            max_amt = coin["amount"]
+        st["amount"] = max_amt
+        _send_state[uid] = st
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_addr(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action == "send_amount":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_amount(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action in ("send_addr_recent", "send_addr_book"):
         async with SessionLocal() as db:
             user = await ledger.ensure_user(db, uid, uname)
             lang = getattr(user, "language", "ru") or "ru"
@@ -2597,6 +3113,51 @@ async def crypto_callback(callback: CallbackQuery) -> None:
             await callback.answer(t("in_development", lang), show_alert=True)
         except TelegramBadRequest:
             pass
+        return
+
+    if action == "send_change_addr":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_addr(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action == "send_memo":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_memo(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action == "send_cancel":
+        _send_state.pop(uid, None)
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if action == "send_confirm":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await _render_send_processing(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        asyncio.create_task(_execute_send(bot=bot, uid=uid, uname=uname))
+        return
+
+    if action == "send_open_wallet":
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
         return
 
     try:
@@ -2742,6 +3303,90 @@ async def set_basic_gifts_input(message: Message) -> None:
     if invalid:
         msg += "\n" + t("profile.basic_gifts_invalid", lang) + "\n" + "\n".join(invalid[:10])
     await message.answer(msg)
+
+
+@router.message(
+    lambda m: bool(
+        m.from_user and m.text and (
+            m.from_user.id in _pending_send_amount
+            or m.from_user.id in _pending_send_addr
+            or m.from_user.id in _pending_send_memo
+        )
+    )
+)
+async def profile_send_text_input(message: Message) -> None:
+    if not message.from_user or not message.text or not message.bot:
+        return
+    uid = message.from_user.id
+    uname = message.from_user.username
+    raw = message.text.strip()
+    bot = message.bot
+    chat_id = message.chat.id
+
+    async with SessionLocal() as db:
+        user = await ledger.ensure_user(db, uid, uname)
+        lang = getattr(user, "language", "ru") or "ru"
+
+    st = _send_state.get(uid) or {}
+    sym = st.get("symbol")
+    coin = (st.get("coins") or {}).get(sym) if sym else None
+
+    if uid in _pending_send_amount:
+        if not coin:
+            _pending_send_amount.discard(uid)
+            await _render_send_pick_coin(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+            return
+        try:
+            amount = Decimal(raw.replace(",", ".").replace(" ", ""))
+        except Exception:
+            return
+        # Проверка лимитов.
+        fee_in_same = coin["fee_sym"] == sym
+        need = amount + (coin["fee_amt"] if fee_in_same else Decimal("0"))
+        if amount < coin["min_amt"] or need > coin["amount"]:
+            await _render_send_amount(
+                bot=bot, chat_id=chat_id, uid=uid, uname=uname,
+                insufficient=True,
+            )
+            return
+        st["amount"] = amount
+        _send_state[uid] = st
+        _pending_send_amount.discard(uid)
+        # Удалим сообщение с цифрой — оно служебное.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await _render_send_addr(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if uid in _pending_send_addr:
+        if not _is_valid_ton_address(raw):
+            await message.answer(t("crypto.send.addr_invalid", lang))
+            return
+        st["address"] = raw
+        _send_state[uid] = st
+        _pending_send_addr.discard(uid)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await _render_send_confirm(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
+
+    if uid in _pending_send_memo:
+        if len(raw) > 50:
+            await message.answer(t("crypto.send.memo_too_long", lang))
+            return
+        st["memo"] = raw
+        _send_state[uid] = st
+        _pending_send_memo.discard(uid)
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        await _render_send_confirm(bot=bot, chat_id=chat_id, uid=uid, uname=uname)
+        return
 
 
 @router.message(

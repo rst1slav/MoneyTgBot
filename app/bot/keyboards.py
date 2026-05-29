@@ -646,6 +646,110 @@ def crypto_reorder_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def crypto_send_coins_keyboard(
+    coins: list[tuple[str, str]],   # [(symbol, label_for_btn)] — отсортированы по USD
+    *,
+    page: int = 1,
+    total_pages: int = 1,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    """3 кнопки в ряд, до 3 рядов = 9 на страницу. Пагинация снизу + back."""
+    per_page = 9
+    start = (page - 1) * per_page
+    chunk = coins[start:start + per_page]
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(chunk), 3):
+        row_chunk = chunk[i:i + 3]
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"crypto:send_coin:{sym}")
+            for sym, label in row_chunk
+        ])
+    if total_pages > 1:
+        rows.append([
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"crypto:send_coin_page:{p}" if p != page else "crypto:noop",
+            )
+            for label, p in _coin_pagination_buttons(page, total_pages)
+        ])
+    rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def crypto_send_amount_keyboard(
+    *, max_amount: str, symbol: str, lang: str = "ru", enabled: bool = True,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if enabled:
+        rows.append([InlineKeyboardButton(
+            text=t("crypto.send.btn_max", lang).format(amt=max_amount, sym=symbol),
+            callback_data="crypto:send_max",
+        )])
+    rows.append([InlineKeyboardButton(
+        text=t("crypto.send.btn_pick_coin", lang),
+        callback_data="crypto:send_start",
+    )])
+    rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def crypto_send_addr_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=t("crypto.send.btn_pick_addr_recent", lang),
+            callback_data="crypto:send_addr_recent",
+        )],
+        [InlineKeyboardButton(
+            text=t("crypto.send.btn_pick_addr_book", lang),
+            callback_data="crypto:send_addr_book",
+        )],
+        [InlineKeyboardButton(
+            text=t("crypto.send.btn_pick_amount", lang),
+            callback_data="crypto:send_amount",
+        )],
+        [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")],
+    ])
+
+
+def crypto_send_confirm_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=t("crypto.send.btn_confirm", lang),
+                callback_data="crypto:send_confirm",
+            ),
+            InlineKeyboardButton(
+                text=t("crypto.send.btn_cancel", lang),
+                callback_data="crypto:send_cancel",
+            ),
+        ],
+        [InlineKeyboardButton(
+            text=t("crypto.send.btn_add_memo", lang),
+            callback_data="crypto:send_memo",
+        )],
+        [InlineKeyboardButton(
+            text=t("crypto.send.btn_change_addr", lang),
+            callback_data="crypto:send_change_addr",
+        )],
+        [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:refresh")],
+    ])
+
+
+def crypto_send_memo_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("back", lang), callback_data="crypto:send_change_addr")],
+    ])
+
+
+def crypto_send_processing_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=t("crypto.send.btn_open_wallet", lang),
+            callback_data="crypto:send_open_wallet",
+        ),
+    ]])
+
+
 def crypto_create_success_keyboard(lang: str = "ru", *, seed: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if seed:
