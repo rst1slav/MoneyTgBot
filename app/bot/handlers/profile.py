@@ -91,8 +91,8 @@ _pending_send_memo: set[int] = set()
 # Минимальная сумма перевода на TON-сети — фикс. константа в TON, остальные
 # монеты конвертим по их usd_price.
 SEND_MIN_TON = Decimal("0.0000001")
-SEND_FEE_TON_NATIVE = Decimal("0.05")       # network fee для TonTransfer
-SEND_FEE_JETTON_GAS_TON = Decimal("0.1")    # gas-резерв для JettonTransfer
+# Комиссия — фиксированный $0.2 в эквиваленте, конвертим в монету по её курсу.
+SEND_FEE_USD = Decimal("0.2")
 
 COINS_PER_PAGE = 8
 COIN_LINKS: dict[str, str] = {
@@ -1033,12 +1033,19 @@ def _coin_min_amount(symbol: str, unit_usd: Decimal | None, ton_price: Decimal |
 
 def _coin_fee(symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None) -> tuple[Decimal, str]:
     """
-    (fee_amount, fee_symbol). Для TON — 0.05 TON. Для жетонов — 0.1 TON в TON.
-    Возвращаем именно в TON, т.к. жетоны платят газ в TON.
+    (fee_amount, fee_symbol). Фикс $0.2 в эквиваленте — конвертим в саму
+    монету по её цене. Если цены нет — отдаём ноль (но это редко, т.к.
+    мы фильтруем монеты по балансу заранее).
     """
-    if symbol.upper() == "TON":
-        return SEND_FEE_TON_NATIVE, "TON"
-    return SEND_FEE_JETTON_GAS_TON, "TON"
+    sym = symbol.upper()
+    if sym == "TON":
+        unit = ton_price
+    else:
+        unit = unit_usd
+    if not unit or unit <= 0:
+        return Decimal("0"), sym
+    fee = (SEND_FEE_USD / unit).quantize(Decimal("0.00000001"))
+    return fee, sym
 
 
 async def _render_send_pick_coin(
