@@ -76,6 +76,50 @@ _last_generated_seed: dict[int, str] = {}    # user_id → just-generated seed (
 # временно не возвращает котировку, — чтобы стоимость в скобках не пропадала.
 # Ключ — символ монеты в верхнем регистре.
 _last_unit_price_usd: dict[str, Decimal] = {}
+# После успешной отправки запоминаем «исходящие в полёте» суммы по
+# (account_id, symbol). render_crypto_main вычитает их из ончейн-баланса,
+# чтобы юзер сразу видел новую цифру и не пытался отправить второй раз.
+# Запись очищается, когда ончейн-баланс сам стал <= cached - pending
+# (значит сеть применила нашу транзу).
+# Структура: account_id → {sym → {"amount": Decimal, "baseline": Decimal}}
+# baseline = ончейн-баланс на момент когда мы добавили pending.
+_pending_outgoing: dict[int, dict[str, dict[str, Decimal]]] = {}
+
+
+def _add_pending_outgoing(account_id: int, sym: str, amount: Decimal, baseline: Decimal) -> None:
+    bucket = _pending_outgoing.setdefault(account_id, {})
+    sym = (sym or "").upper()
+    prev = bucket.get(sym)
+    if prev:
+        bucket[sym] = {
+            "amount": prev["amount"] + amount,
+            "baseline": min(prev["baseline"], baseline),
+        }
+    else:
+        bucket[sym] = {"amount": amount, "baseline": baseline}
+
+
+def _apply_pending(account_id: int, sym: str, onchain: Decimal) -> Decimal:
+    """
+    Возвращает оптимистичный баланс = onchain - pending, и очищает
+    pending когда сеть нагнала (onchain уже отражает наш перевод).
+    """
+    bucket = _pending_outgoing.get(account_id)
+    if not bucket:
+        return onchain
+    entry = bucket.get((sym or "").upper())
+    if not entry:
+        return onchain
+    pending = entry["amount"]
+    baseline = entry["baseline"]
+    # Если ончейн упал хотя бы на половину pending — считаем что транза
+    # применилась, и забываем про неё.
+    if onchain <= baseline - pending / 2:
+        bucket.pop((sym or "").upper(), None)
+        if not bucket:
+            _pending_outgoing.pop(account_id, None)
+        return onchain
+    return max(Decimal("0"), onchain - pending)
 # Промежуточное состояние свапа в экране переупорядочивания.
 # user_id → выбранный account_id (ждём №-нажатие) или None.
 _pending_reorder_pick: dict[int, int] = {}
@@ -849,7 +893,9 @@ async def render_crypto_main(
         except Exception:
             ton_bal, jets, ton_price = None, [], None
 
-        ton_amount = ton_bal if ton_bal is not None else Decimal("0")
+        raw_ton_amount = ton_bal if ton_bal is not None else Decimal("0")
+        # Оптимистично применяем pending по TON
+        ton_amount = _apply_pending(acc.id, "TON", raw_ton_amount)
         # Если API вернул свежую цену TON — кэшируем за единицу для будущих
         # фоллбэков. Иначе пытаемся взять прошлую известную и хотя бы
         # приблизительно показать сумму — пользователю важнее увидеть какие-то
@@ -888,10 +934,11 @@ async def render_crypto_main(
 
         usdt_entry = next((j for j in jets if (j["symbol"] or "").upper() in {"USDT", "USD₮"}), None)
         if usdt_entry:
+            adj = _apply_pending(acc.id, "USDT", usdt_entry["amount"])
             coins.append({
                 "symbol": "USDT",
-                "amount": usdt_entry["amount"],
-                "usd_value": _coin_usd("USDT", usdt_entry["amount"], usdt_entry["usd_value"]),
+                "amount": adj,
+                "usd_value": _coin_usd("USDT", adj, usdt_entry["usd_value"] * (adj / usdt_entry["amount"]) if usdt_entry["amount"] else usdt_entry["usd_value"]),
                 "always_show": True,
             })
         else:
@@ -908,10 +955,11 @@ async def render_crypto_main(
                 continue
             if jet["amount"] <= 0:
                 continue
+            adj = _apply_pending(acc.id, sym, jet["amount"])
             coins.append({
                 "symbol": jet["symbol"],
-                "amount": jet["amount"],
-                "usd_value": _coin_usd(jet["symbol"], jet["amount"], jet["usd_value"]),
+                "amount": adj,
+                "usd_value": _coin_usd(jet["symbol"], adj, jet["usd_value"] * (adj / jet["amount"]) if jet["amount"] else jet["usd_value"]),
                 "always_show": False,
             })
 
@@ -1432,6 +1480,14 @@ async def _execute_send(
         )
 
         from app.services.send_service import execute_transfer, SendError
+        # Запоминаем «исходящие в полёте» суммы ДО отправки чтобы
+        # оптимистично уменьшить баланс в render_crypto_main даже если
+        # tonapi ещё не догнал. Берём текущий баланс как baseline.
+        try:
+            baseline_coins, _ = await _fetch_wallet_coins(account)
+            baseline_map = {c["symbol"].upper(): c["amount"] for c in baseline_coins}
+        except Exception:
+            baseline_map = {}
         try:
             tx_hash = await execute_transfer(
                 seed_phrase=seed_phrase,
@@ -1454,6 +1510,16 @@ async def _execute_send(
                 pass
             return
 
+        # Регистрируем оптимистичное списание. Сетевой подтверждение займёт
+        # несколько секунд, но юзеру в кошельке цифра должна обновиться
+        # сразу.
+        sym_up = sym.upper()
+        total_out = amount + (
+            fee_amount if (coin.get("fee_sym") == sym and fee_amount) else Decimal("0")
+        )
+        baseline = baseline_map.get(sym_up, Decimal("0"))
+        _add_pending_outgoing(account.id, sym_up, total_out, baseline)
+
         tonviewer = (
             f"https://tonviewer.com/transaction/{tx_hash}"
             if tx_hash else f"https://tonviewer.com/{account.external_ref}"
@@ -1465,7 +1531,7 @@ async def _execute_send(
             chat_id=uid, text=text, parse_mode="HTML",
             disable_web_page_preview=True,
         )
-        log_.info("send execute done uid=%s tx=%s", uid, tx_hash)
+        log_.info("send execute done uid=%s tx=%s pending=%s", uid, tx_hash, total_out)
     except Exception as exc:
         log_.exception("send execute failed: %s", exc)
         try:

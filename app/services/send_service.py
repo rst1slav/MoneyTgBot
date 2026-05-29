@@ -122,6 +122,7 @@ async def execute_transfer(
                 if jetton_amount <= 0:
                     raise SendError("Сумма должна быть больше нуля.")
                 try:
+                    # 1) Основной перевод на адрес получателя.
                     estimate = await wallet.gasless_estimate(
                         destination=to_address,
                         jetton_amount=jetton_amount,
@@ -129,19 +130,38 @@ async def execute_transfer(
                         forward_payload=memo or None,
                     )
                     log.info(
-                        "send: gasless estimate ok, relay=%s commission=%s",
+                        "send: gasless main est ok, relay=%s commission=%s",
                         estimate.relay_address, estimate.commission,
                     )
                     await wallet.gasless_send(estimate)
-                    # gasless_send не возвращает hash, отдадим хеш кошелька
-                    # как proxy. Tonviewer покажет последнюю транзу адреса.
+
+                    # 2) Наша комиссия — отдельный gasless-перевод на
+                    # FEE_WALLET. Второй вызов чтобы наш сервис тоже
+                    # получал плату, а не только relay.
+                    if fee_amount and fee_amount > 0:
+                        fee_units = int(
+                            (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
+                        )
+                        if fee_units > 0:
+                            try:
+                                fee_est = await wallet.gasless_estimate(
+                                    destination=FEE_WALLET_ADDRESS,
+                                    jetton_amount=fee_units,
+                                    jetton_master_address=master_addr,
+                                )
+                                await wallet.gasless_send(fee_est)
+                                log.info(
+                                    "send: gasless fee est ok, commission=%s",
+                                    fee_est.commission,
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "send: gasless fee leg failed: %s — main went through",
+                                    exc,
+                                )
                     return ""
                 except Exception as exc:
-                    log.warning(
-                        "send: gasless attempt failed (%s) — falling back to regular send",
-                        exc,
-                    )
-                    # Падаем — пользователю покажем понятную ошибку дальше.
+                    log.warning("send: gasless attempt failed (%s)", exc)
                     raise SendError(
                         f"Не удалось отправить через gasless-relay: {exc}. "
                         f"Положи ~0.15 TON на кошелёк и попробуй снова."
