@@ -140,6 +140,15 @@ async def _notify_new_incomes(bot: Bot) -> None:
                     f"{_html.escape(wallet_label)} "
                     f"({addr_part})."
                 )
+                # Если в транзе был комментарий — приклеиваем строку
+                # «💬 …» после пустой строки. Дефолтные плейсхолдеры
+                # из ton_service._parse_action в качестве memo не считаем.
+                desc = (tx.description or "").strip()
+                if desc and desc not in {
+                    "ton transfer", "USDT transfer", "USDC transfer",
+                    "NOT transfer", "USD₮ transfer",
+                }:
+                    text += f"\n\n💬 {_html.escape(desc)}"
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(
                         text="👛 Открыть кошелёк",
