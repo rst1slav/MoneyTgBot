@@ -3241,13 +3241,21 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         return
 
     if action == "send_open_wallet":
+        # Снимаем кнопку с сообщения «Отправка в процессе» и шлём кошелёк
+        # как НОВОЕ сообщение, чтобы запись о процессе осталась в чате
+        # и кнопку нельзя было нажать повторно.
         try:
             await callback.answer()
         except TelegramBadRequest:
             pass
+        if callback.message:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
         await render_crypto_main(
             bot=bot, chat_id=chat_id, panel_user_id=uid,
-            telegram_id=uid, username=uname,
+            telegram_id=uid, username=uname, force_new=True,
         )
         return
 
