@@ -1380,12 +1380,63 @@ async def _execute_send(
     if not all([sym, amount, address]):
         log_.warning("send execute: missing state, aborting")
         return
-    # Реальной подписи и отправки ещё нет — поэтому НЕ шлём фейковое
-    # «✅ Отправка завершена» с нулевым хешем (ссылка на tonviewer
-    # ведёт в 404 и вводит юзера в заблуждение). Экран «в процессе»
-    # остаётся висеть, пока не появится реальный send-flow.
-    log_.info("send execute: stub — no real signing yet, skipping done notif")
-    _send_state.pop(uid, None)
+    memo = state.get("memo")
+    wallet_id = state.get("wallet_id")
+    try:
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+            account = await ledger.get_account_by_id(db, user.id, wallet_id) if wallet_id else None
+        if not account or not account.encrypted_secret:
+            raise RuntimeError("Кошелёк без сохранённого seed — отправка невозможна.")
+        seed_phrase = _cipher.decrypt(account.encrypted_secret)
+
+        from app.services.send_service import execute_transfer, SendError
+        try:
+            tx_hash = await execute_transfer(
+                seed_phrase=seed_phrase,
+                from_address=account.external_ref,
+                to_address=address,
+                symbol=sym,
+                amount=amount,
+                memo=memo,
+            )
+        except SendError as exc:
+            log_.warning("send refused: %s", exc)
+            try:
+                await bot.send_message(
+                    chat_id=uid,
+                    text=f"❌ {html.escape(str(exc))}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+
+        tonviewer = (
+            f"https://tonviewer.com/transaction/{tx_hash}"
+            if tx_hash else f"https://tonviewer.com/{account.external_ref}"
+        )
+        text = t("crypto.send.done_notify_html", lang).format(
+            url=tonviewer, amt=_format_coin_amount(amount), sym=sym, base="",
+        )
+        await bot.send_message(
+            chat_id=uid, text=text, parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        log_.info("send execute done uid=%s tx=%s", uid, tx_hash)
+    except Exception as exc:
+        log_.exception("send execute failed: %s", exc)
+        try:
+            await bot.send_message(
+                chat_id=uid,
+                text=f"❌ {html.escape(str(exc))}",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    finally:
+        _send_state.pop(uid, None)
 
 
 async def _render_crypto_reorder(

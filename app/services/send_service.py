@@ -1,0 +1,122 @@
+"""
+Реальная отправка TON и жетонов из подключённого кошелька. Сейчас
+поддерживаются: TON (native) и USDT (mainnet jetton master
+EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs).
+
+Поток:
+  1) Достаём seed из encrypted_secret.
+  2) wallet_derive.derive_signer_for_address — подбирает (priv_key, class)
+     из всех известных схем (BIP39+SLIP-0010 / tonsdk native + W5R1..V3R1),
+     которые дают сохранённый external_ref.
+  3) Создаём WalletV5R1.from_private_key с настоящим ToncenterClient.
+  4) Строим TONTransferBuilder или JettonTransferBuilder и зовём
+     wallet.transfer_message — оно подпишет и отправит.
+  5) Возвращаем нормализованный hex-хеш внешнего сообщения — на tonviewer
+     он соответствует transaction page.
+
+Стейблы пока хардкод: USDT mainnet master + decimals=6. Расширять — по мере
+добавления других монет.
+"""
+
+from __future__ import annotations
+
+import logging
+from decimal import Decimal
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+# Mainnet master адреса для жетонов которые умеем отправлять.
+JETTON_MASTERS: dict[str, tuple[str, int]] = {
+    # symbol → (master_address, decimals)
+    "USDT": ("EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs", 6),
+    "USDC": ("EQB-MPwrd1G6WKNkLz_VnV6WqBDd142KMQv-g1O-8QUA3728", 6),
+    "NOT":  ("EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT", 9),
+}
+
+
+class SendError(Exception):
+    pass
+
+
+async def execute_transfer(
+    *,
+    seed_phrase: str,
+    from_address: str,
+    to_address: str,
+    symbol: str,
+    amount: Decimal,
+    memo: str | None = None,
+) -> str:
+    """
+    Подписывает и шлёт перевод. Возвращает hex-хеш внешнего сообщения
+    (его можно показать как tonviewer.com/transaction/<hash>).
+    Бросает SendError с понятным текстом если что-то не вышло.
+    """
+    from app.services.wallet_derive import derive_signer_for_address
+
+    sig = derive_signer_for_address(seed_phrase, from_address)
+    if sig is None:
+        raise SendError(
+            "Не удалось восстановить ключи для этого кошелька — seed не "
+            "совпадает с сохранённым адресом."
+        )
+    priv32, wallet_cls = sig
+    log.info("send: using %s for %s", wallet_cls.__name__, from_address)
+
+    try:
+        from tonutils.clients import ToncenterClient
+        from tonutils.contracts.wallet.messages import (
+            JettonTransferBuilder, TONTransferBuilder,
+        )
+        from ton_core.contrib.types import NetworkGlobalID, PrivateKey
+    except Exception as exc:
+        raise SendError(f"Зависимости tonutils недоступны: {exc}")
+
+    client = ToncenterClient(network=NetworkGlobalID.MAINNET)
+    try:
+        async with client:
+            pk = PrivateKey(priv32)
+            wallet = wallet_cls.from_private_key(client, pk)
+
+            sym = (symbol or "").upper()
+            if sym == "TON":
+                amount_nano = int(amount * Decimal("1000000000"))
+                if amount_nano <= 0:
+                    raise SendError("Сумма должна быть больше нуля.")
+                builder = TONTransferBuilder(
+                    destination=to_address,
+                    amount=amount_nano,
+                    body=memo or None,
+                )
+                msg = await wallet.transfer_message(builder)
+            else:
+                meta = JETTON_MASTERS.get(sym)
+                if meta is None:
+                    raise SendError(f"Жетон {sym} пока не поддерживается.")
+                master_addr, decimals = meta
+                jetton_amount = int(
+                    (amount * (Decimal(10) ** decimals)).to_integral_value()
+                )
+                if jetton_amount <= 0:
+                    raise SendError("Сумма должна быть больше нуля.")
+                builder = JettonTransferBuilder(
+                    destination=to_address,
+                    jetton_amount=jetton_amount,
+                    jetton_master_address=master_addr,
+                    forward_payload=memo or None,
+                )
+                msg = await wallet.transfer_message(builder)
+
+            tx_hash = getattr(msg, "normalized_hash", None)
+            if tx_hash is None:
+                tx_hash = b""
+            if isinstance(tx_hash, (bytes, bytearray)):
+                tx_hash = tx_hash.hex()
+            log.info("send: tx hash %s", tx_hash)
+            return str(tx_hash)
+    except SendError:
+        raise
+    except Exception as exc:
+        log.exception("send failed: %s", exc)
+        raise SendError(f"Ошибка сети при отправке: {exc}")

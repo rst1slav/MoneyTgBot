@@ -308,6 +308,103 @@ async def find_active_address(candidates: list[str]) -> str | None:
     return None
 
 
+BIP39_PATHS = [
+    "m/44'/607'/0'",
+    "m/44'/607'/0'/0'",
+    "m/44'/607'/0'/0'/0'",
+    "m/44'/396'/0'/0'/0'",
+]
+
+
+def _addrs_match(addr_a: str, addr_b: str) -> bool:
+    try:
+        from pytoniq_core.boc.address import Address
+        return Address(addr_a).hash_part == Address(addr_b).hash_part
+    except Exception:
+        return addr_a.lower() == addr_b.lower()
+
+
+def derive_signer_for_address(seed: str, target_address: str):
+    """
+    Подбирает (priv32, wallet_class) такие, что собранный из них адрес
+    совпадает с target_address. Перебираем те же схемы что в
+    derive_all_candidates: BIP39+SLIP-0010 несколько path × все версии,
+    tonsdk-mnemonic × все версии. Возвращает None если ничего не подошло
+    (значит seed уже не от этого адреса — менять нельзя).
+    """
+    words = [w.strip().lower() for w in (seed or "").split() if w.strip()]
+    if not words:
+        return None
+    try:
+        from tonutils.contracts.wallet.versions.v5 import WalletV5R1, WalletV5Beta
+        from tonutils.contracts.wallet.versions.v4 import WalletV4R2, WalletV4R1
+        from tonutils.contracts.wallet.versions.v3 import WalletV3R2, WalletV3R1
+        from ton_core.contrib.types import PrivateKey
+    except Exception as exc:
+        log.warning("tonutils unavailable for signer derivation: %s", exc)
+        return None
+
+    classes = (WalletV5R1, WalletV5Beta, WalletV4R2, WalletV4R1,
+               WalletV3R2, WalletV3R1)
+    dummy = _mainnet_client()
+
+    # 1. BIP39+SLIP-0010
+    try:
+        from bip_utils import (
+            Bip39MnemonicValidator, Bip39SeedGenerator, Bip32Slip10Ed25519,
+        )
+        phrase = " ".join(words)
+        if Bip39MnemonicValidator().IsValid(phrase):
+            seed_bytes = Bip39SeedGenerator(phrase).Generate()
+            for path in BIP39_PATHS:
+                try:
+                    node = Bip32Slip10Ed25519.FromSeed(seed_bytes).DerivePath(path)
+                    priv32 = node.PrivateKey().Raw().ToBytes()
+                    if len(priv32) != 32:
+                        continue
+                except Exception:
+                    continue
+                pk = PrivateKey(priv32)
+                for cls in classes:
+                    try:
+                        w = cls.from_private_key(dummy, pk)
+                        if _addrs_match(
+                            w.address.to_str(is_user_friendly=True,
+                                             is_bounceable=False,
+                                             is_url_safe=True),
+                            target_address,
+                        ):
+                            return priv32, cls
+                    except Exception:
+                        continue
+    except Exception as exc:
+        log.info("bip39 signer search failed: %s", exc)
+
+    # 2. tonsdk native 24-word mnemonic
+    if len(words) == 24:
+        try:
+            from tonsdk.crypto import mnemonic_to_wallet_key
+            pub, priv64 = mnemonic_to_wallet_key(words)
+            priv32 = bytes(priv64)[:32]
+            pk = PrivateKey(priv32)
+            for cls in classes:
+                try:
+                    w = cls.from_private_key(dummy, pk)
+                    if _addrs_match(
+                        w.address.to_str(is_user_friendly=True,
+                                         is_bounceable=False,
+                                         is_url_safe=True),
+                        target_address,
+                    ):
+                        return priv32, cls
+                except Exception:
+                    continue
+        except Exception as exc:
+            log.info("tonsdk signer fallback failed: %s", exc)
+
+    return None
+
+
 async def derive_address_from_seed(seed: str) -> tuple[str | None, list[str]]:
     """
     (active_address, all_candidates).
