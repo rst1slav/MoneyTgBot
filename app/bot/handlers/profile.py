@@ -1367,30 +1367,38 @@ async def _execute_send(
     в чат уведомление об успешном завершении с фейковой ссылкой. Логика
     подписи через сохранённый seed + tonutils — TODO следующего коммита.
     """
+    import logging as _lg
+    log_ = _lg.getLogger(__name__)
     state = _send_state.get(uid) or {}
     sym = state.get("symbol")
     amount = state.get("amount")
     address = state.get("address")
-    if not all([sym, amount, address]):
-        return
-    # Дадим UI обновиться, имитируем отправку.
-    await asyncio.sleep(5)
-    async with SessionLocal() as db:
-        user = await ledger.ensure_user(db, uid, uname)
-        lang = getattr(user, "language", "ru") or "ru"
-    fake_tx = "0" * 64  # TODO: реальный хеш транзакции после подписи
-    tonviewer = f"https://tonviewer.com/transaction/{fake_tx}"
-    text = t("crypto.send.done_notify_html", lang).format(
-        url=tonviewer, amt=_format_coin_amount(amount), sym=sym, base="",
+    log_.info(
+        "send execute start uid=%s sym=%s amount=%s address=%s",
+        uid, sym, amount, address,
     )
+    if not all([sym, amount, address]):
+        log_.warning("send execute: missing state, aborting")
+        return
     try:
+        await asyncio.sleep(5)
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        fake_tx = "0" * 64  # TODO: реальный хеш транзакции после подписи
+        tonviewer = f"https://tonviewer.com/transaction/{fake_tx}"
+        text = t("crypto.send.done_notify_html", lang).format(
+            url=tonviewer, amt=_format_coin_amount(amount), sym=sym, base="",
+        )
         await bot.send_message(
             chat_id=uid, text=text, parse_mode="HTML",
             disable_web_page_preview=True,
         )
-    except Exception:
-        pass
-    _send_state.pop(uid, None)
+        log_.info("send execute done uid=%s", uid)
+    except Exception as exc:
+        log_.exception("send execute failed: %s", exc)
+    finally:
+        _send_state.pop(uid, None)
 
 
 async def _render_crypto_reorder(
