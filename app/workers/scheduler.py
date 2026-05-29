@@ -113,22 +113,32 @@ async def _notify_new_incomes(bot: Bot) -> None:
                 else:
                     money_part = f"<b>{amt_str} {coin_sym}</b>"
 
-                # external_tx_id = "{event_id}#{action_idx}" — для tonviewer
-                # нужен только event_id.
+                # external_tx_id = "{event_id}#{action_idx}". На слове
+                # «получили» — ссылка на транзу, на адресе — ссылка на
+                # сам адрес. Это разные страницы tonviewer.
                 event_id = (tx.external_tx_id or "").split("#", 1)[0]
-                tonviewer_url = (
+                tx_url = (
                     f"https://tonviewer.com/transaction/{event_id}"
                     if event_id else None
                 )
+                addr_url = (
+                    f"https://tonviewer.com/{account.external_ref}"
+                    if account.external_ref else None
+                )
                 received_word = (
-                    f'<a href="{tonviewer_url}">получили</a>'
-                    if tonviewer_url else "получили"
+                    f'<a href="{tx_url}">получили</a>'
+                    if tx_url else "получили"
+                )
+                addr_part = (
+                    f'<a href="{addr_url}">{_html.escape(short_addr)}</a>'
+                    if addr_url
+                    else f"<code>{_html.escape(short_addr)}</code>"
                 )
 
                 text = (
                     f"📥 Вы {received_word} {money_part} на "
                     f"{_html.escape(wallet_label)} "
-                    f"(<code>{_html.escape(short_addr)}</code>)."
+                    f"({addr_part})."
                 )
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(

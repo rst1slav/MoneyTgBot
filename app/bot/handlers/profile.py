@@ -1380,25 +1380,12 @@ async def _execute_send(
     if not all([sym, amount, address]):
         log_.warning("send execute: missing state, aborting")
         return
-    try:
-        await asyncio.sleep(5)
-        async with SessionLocal() as db:
-            user = await ledger.ensure_user(db, uid, uname)
-            lang = getattr(user, "language", "ru") or "ru"
-        fake_tx = "0" * 64  # TODO: реальный хеш транзакции после подписи
-        tonviewer = f"https://tonviewer.com/transaction/{fake_tx}"
-        text = t("crypto.send.done_notify_html", lang).format(
-            url=tonviewer, amt=_format_coin_amount(amount), sym=sym, base="",
-        )
-        await bot.send_message(
-            chat_id=uid, text=text, parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        log_.info("send execute done uid=%s", uid)
-    except Exception as exc:
-        log_.exception("send execute failed: %s", exc)
-    finally:
-        _send_state.pop(uid, None)
+    # Реальной подписи и отправки ещё нет — поэтому НЕ шлём фейковое
+    # «✅ Отправка завершена» с нулевым хешем (ссылка на tonviewer
+    # ведёт в 404 и вводит юзера в заблуждение). Экран «в процессе»
+    # остаётся висеть, пока не появится реальный send-flow.
+    log_.info("send execute: stub — no real signing yet, skipping done notif")
+    _send_state.pop(uid, None)
 
 
 async def _render_crypto_reorder(
