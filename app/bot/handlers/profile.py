@@ -978,6 +978,7 @@ async def render_crypto_main(
             coin_page=coin_page,
             coin_total_pages=total_pages,
             is_favorite=bool(accounts[wallet_idx].is_favorite) if accounts else False,
+            current_address=accounts[wallet_idx].external_ref if accounts else None,
         ),
         parse_mode="HTML",
         disable_web_preview=True,

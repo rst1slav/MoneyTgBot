@@ -478,6 +478,7 @@ def crypto_main_keyboard(
     coin_page: int = 1,
     coin_total_pages: int = 1,
     is_favorite: bool = False,
+    current_address: str | None = None,
 ) -> InlineKeyboardMarkup:
     if wallets and 0 <= current_idx < len(wallets):
         label = wallets[current_idx][1]
@@ -500,6 +501,14 @@ def crypto_main_keyboard(
         right_btn = InlineKeyboardButton(text="➡️", callback_data="crypto:next")
     else:
         right_btn = InlineKeyboardButton(text="🆕", callback_data="crypto:new_menu")
+    # Кнопка адреса — копирует полный адрес в буфер при нажатии.
+    if current_address:
+        addr_btn = InlineKeyboardButton(
+            text=label,
+            copy_text=CopyTextButton(text=current_address),
+        )
+    else:
+        addr_btn = InlineKeyboardButton(text=label, callback_data="crypto:noop")
     switcher_row: list[InlineKeyboardButton] = [
         left_btn,
         InlineKeyboardButton(
@@ -507,7 +516,7 @@ def crypto_main_keyboard(
             callback_data="crypto:fav",
             style="success" if is_favorite else None,
         ),
-        InlineKeyboardButton(text=label, callback_data="crypto:noop"),
+        addr_btn,
         InlineKeyboardButton(text=f"№{position}", callback_data="crypto:reorder"),
         right_btn,
     ]
