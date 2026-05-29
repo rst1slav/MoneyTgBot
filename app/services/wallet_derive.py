@@ -131,15 +131,10 @@ def _try_bip39(words: list[str]) -> list[str]:
         log.info("bip39 seed gen failed: %s", exc)
         return addrs
 
-    # A) старый путь — на случай Trust Wallet
-    try:
-        acc = Bip44.FromSeed(seed_bytes, Bip44Coins.TON).DeriveDefaultPath()
-        addrs.append(acc.PublicKey().ToAddress())
-    except Exception as exc:
-        log.info("bip39 Bip44 default failed: %s", exc)
-
-    # B+C) SLIP-0010 ed25519 → достаём приватный ключ и собираем все
-    # стандартные TON-версии через tonutils.
+    # A) SLIP-0010 ed25519 → достаём приватный ключ и собираем все
+    # стандартные TON-версии через tonutils. Это ПЕРВЫМ, потому что
+    # m/44'/607'/0' + W5R1 UQ — дефолт MyTonWallet для BIP39, и
+    # именно его мы хотим как fallback при отсутствии активности.
     try:
         from tonutils.contracts.wallet.versions.v5 import WalletV5R1, WalletV5Beta
         from tonutils.contracts.wallet.versions.v4 import WalletV4R2, WalletV4R1
@@ -147,48 +142,66 @@ def _try_bip39(words: list[str]) -> list[str]:
         from ton_core.contrib.types import PrivateKey
     except Exception as exc:
         log.info("tonutils for bip39 derivation unavailable: %s", exc)
-        return addrs
+        WalletV5R1 = None
 
-    client = _mainnet_client()
-    paths = [
-        "m/44'/607'/0'",          # MyTonWallet, Tonkeeper-BIP39
-        "m/44'/607'/0'/0'",       # MTW старая вариация
-        "m/44'/607'/0'/0'/0'",    # Ledger-style
-        "m/44'/396'/0'/0'/0'",    # старый TON path до 607
-    ]
-    wallet_classes = (WalletV5R1, WalletV5Beta, WalletV4R2, WalletV4R1,
-                      WalletV3R2, WalletV3R1)
-
-    for path in paths:
-        try:
-            node = Bip32Slip10Ed25519.FromSeed(seed_bytes).DerivePath(path)
-            priv32 = node.PrivateKey().Raw().ToBytes()
-            if len(priv32) != 32:
-                continue
-            pk = PrivateKey(priv32)
-        except Exception as exc:
-            log.info("slip10 path %s failed: %s", path, exc)
-            continue
-        for cls in wallet_classes:
+    if WalletV5R1 is not None:
+        client = _mainnet_client()
+        paths = [
+            "m/44'/607'/0'",          # MyTonWallet, Tonkeeper-BIP39 (DEFAULT)
+            "m/44'/607'/0'/0'",       # MTW старая вариация
+            "m/44'/607'/0'/0'/0'",    # Ledger-style
+            "m/44'/396'/0'/0'/0'",    # старый TON path до 607
+        ]
+        wallet_classes = (WalletV5R1, WalletV5Beta, WalletV4R2, WalletV4R1,
+                          WalletV3R2, WalletV3R1)
+        for path in paths:
             try:
-                w = cls.from_private_key(client, pk)
-                addrs.append(_addr_uq(w.address))
-                addrs.append(_addr_eq(w.address))
+                node = Bip32Slip10Ed25519.FromSeed(seed_bytes).DerivePath(path)
+                priv32 = node.PrivateKey().Raw().ToBytes()
+                if len(priv32) != 32:
+                    continue
+                pk = PrivateKey(priv32)
             except Exception as exc:
-                log.info("bip39 %s @ %s failed: %s", cls.__name__, path, exc)
+                log.info("slip10 path %s failed: %s", path, exc)
+                continue
+            for cls in wallet_classes:
+                try:
+                    w = cls.from_private_key(client, pk)
+                    addrs.append(_addr_uq(w.address))
+                    addrs.append(_addr_eq(w.address))
+                except Exception as exc:
+                    log.info("bip39 %s @ %s failed: %s", cls.__name__, path, exc)
+
+    # B) Trust Wallet legacy — bip_utils' встроенный V3-адрес. В конец, чтобы
+    # не перетягивать MTW-default из позиции [0].
+    try:
+        acc = Bip44.FromSeed(seed_bytes, Bip44Coins.TON).DeriveDefaultPath()
+        addrs.append(acc.PublicKey().ToAddress())
+    except Exception as exc:
+        log.info("bip39 Bip44 default failed: %s", exc)
+
     return addrs
 
 
 def derive_all_candidates(seed: str) -> list[str]:
-    """Уникальные адреса-кандидаты из всех известных схем деривации."""
+    """
+    Уникальные адреса-кандидаты. Порядок ВАЖЕН — при пустом кошельке
+    (когда ни один кандидат не активен на чейне) мы берём первого как
+    fallback. Так что первым должен идти MTW-дефолт: BIP39+SLIP-0010
+    m/44'/607'/0' → W5R1 UQ. Это то, что показывает MyTonWallet при
+    импорте 12/24-словного BIP39-сида.
+    """
     words = [w.strip().lower() for w in (seed or "").split() if w.strip()]
     if not words:
         return []
 
+    # BIP39 идёт первым, чтобы MTW-default W5R1 UQ был candidates[0].
+    # Если seed не BIP39 — _try_bip39 вернёт пустой список и порядок
+    # сместится к tonutils (TON-native mnemonic) автоматически.
     seen: set[str] = set()
     out: list[str] = []
     for addr in (
-        _try_tonutils(words) + _try_tonsdk(words) + _try_bip39(words)
+        _try_bip39(words) + _try_tonutils(words) + _try_tonsdk(words)
     ):
         if addr and addr not in seen:
             seen.add(addr)
