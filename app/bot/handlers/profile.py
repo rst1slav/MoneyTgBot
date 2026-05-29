@@ -65,6 +65,10 @@ _pending_crypto_rename: dict[int, int] = {}  # user_id → wallet account_id
 _pending_crypto_seed_only: set[int] = set()  # user_id → awaiting seed-only import
 _pending_crypto_addr_only: set[int] = set()  # user_id → awaiting address-only import
 _last_generated_seed: dict[int, str] = {}    # user_id → just-generated seed (for 📋 copy button)
+# Кэш цен в USD за единицу монеты. Используется как fallback, когда API
+# временно не возвращает котировку, — чтобы стоимость в скобках не пропадала.
+# Ключ — символ монеты в верхнем регистре.
+_last_unit_price_usd: dict[str, Decimal] = {}
 
 COINS_PER_PAGE = 8
 COIN_LINKS: dict[str, str] = {
@@ -807,13 +811,17 @@ async def render_crypto_main(
             ton_bal, jets, ton_price = None, [], None
 
         ton_amount = ton_bal if ton_bal is not None else Decimal("0")
-        # Если курс TON временно недоступен (API упал) — при нулевом балансе
-        # показываем 0, при ненулевом оставляем None, чтобы пользователь видел,
-        # что цена ещё не подгрузилась.
+        # Если API вернул свежую цену TON — кэшируем за единицу для будущих
+        # фоллбэков. Иначе пытаемся взять прошлую известную и хотя бы
+        # приблизительно показать сумму — пользователю важнее увидеть какие-то
+        # цифры, чем пустую скобку.
         if ton_price is not None:
+            _last_unit_price_usd["TON"] = ton_price
             ton_usd = ton_amount * ton_price
         elif ton_amount == 0:
             ton_usd = Decimal("0")
+        elif "TON" in _last_unit_price_usd:
+            ton_usd = ton_amount * _last_unit_price_usd["TON"]
         else:
             ton_usd = None
         coins.append({
@@ -823,12 +831,28 @@ async def render_crypto_main(
             "always_show": True,
         })
 
+        def _coin_usd(sym: str, amount: Decimal, usd_value: Decimal | None) -> Decimal | None:
+            """Кэшируем unit-price на удачных тиках и переиспользуем при пустых."""
+            sym_key = (sym or "").upper()
+            if usd_value is not None and amount > 0:
+                try:
+                    _last_unit_price_usd[sym_key] = usd_value / amount
+                except Exception:
+                    pass
+                return usd_value
+            if amount == 0:
+                return Decimal("0")
+            cached = _last_unit_price_usd.get(sym_key)
+            if cached is not None:
+                return amount * cached
+            return None
+
         usdt_entry = next((j for j in jets if (j["symbol"] or "").upper() in {"USDT", "USD₮"}), None)
         if usdt_entry:
             coins.append({
                 "symbol": "USDT",
                 "amount": usdt_entry["amount"],
-                "usd_value": usdt_entry["usd_value"],
+                "usd_value": _coin_usd("USDT", usdt_entry["amount"], usdt_entry["usd_value"]),
                 "always_show": True,
             })
         else:
@@ -848,7 +872,7 @@ async def render_crypto_main(
             coins.append({
                 "symbol": jet["symbol"],
                 "amount": jet["amount"],
-                "usd_value": jet["usd_value"],
+                "usd_value": _coin_usd(jet["symbol"], jet["amount"], jet["usd_value"]),
                 "always_show": False,
             })
 
