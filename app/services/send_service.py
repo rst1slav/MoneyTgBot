@@ -138,22 +138,34 @@ async def execute_transfer(
                     main_commission_units = int(estimate.commission or 0)
                     await wallet.gasless_send(estimate)
 
-                    # 2) Остаток от бюджета $0.25 — на FEE_WALLET. Бюджет
-                    # уже учитывает что relay съест и свою долю при
-                    # отправке fee leg, поэтому оцениваем сначала, а
-                    # потом отправляем разницу. Если relay сожрал всё —
-                    # fee leg пропускаем.
+                    # 2) Остаток бюджета — на FEE_WALLET. Хитрость: при
+                    # gasless relay САМ берёт ещё одну комиссию ПОВЕРХ
+                    # jetton_amount при fee leg. Чтобы суммарное списание
+                    # с отправителя было ровно budget (а не budget +
+                    # доп.комиссия), берём:
+                    #
+                    #   fee_leg_total = budget - main_commission
+                    #   jetton_amount = fee_leg_total - fee_commission
+                    #
+                    # Так как fee_commission заранее не знаем, но обычно
+                    # она ≈ main_commission, делаем грубый прогноз и
+                    # уточняем эстимейтом. Если бюджет уже съеден на
+                    # main — fee leg пропускаем.
                     if fee_amount and fee_amount > 0:
                         budget_units = int(
                             (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
                         )
-                        # после relay комиссии на главной транзе
-                        remainder = budget_units - main_commission_units
-                        if remainder <= 0:
+                        # планируем: на fee leg отправитель потратит
+                        # (budget - main_commission). Из этого relay
+                        # возьмёт свою долю.
+                        fee_leg_total = budget_units - main_commission_units
+                        # прогноз: relay возьмёт ~main_commission
+                        predicted_fee_jetton = fee_leg_total - main_commission_units
+                        min_net = int(Decimal("0.01") * (Decimal(10) ** decimals))
+                        if predicted_fee_jetton < min_net:
                             log.info(
-                                "send: relay ate all fee budget (commission=%s >= budget=%s), "
-                                "skipping FEE leg",
-                                main_commission_units, budget_units,
+                                "send: predicted fee jetton too small (%s < %s) — skip",
+                                predicted_fee_jetton, min_net,
                             )
                         else:
                             import asyncio as _aio
@@ -163,32 +175,30 @@ async def execute_transfer(
                             except Exception:
                                 pass
                             try:
-                                # Эстимейт чтоб узнать сколько relay
-                                # съест на этом переводе.
                                 fee_est = await wallet.gasless_estimate(
                                     destination=FEE_WALLET_ADDRESS,
-                                    jetton_amount=remainder,
+                                    jetton_amount=predicted_fee_jetton,
                                     jetton_master_address=master_addr,
                                 )
-                                fee_commission_units = int(fee_est.commission or 0)
-                                net_to_fee_wallet = remainder - fee_commission_units
-                                log.info(
-                                    "send: gasless FEE est: commission=%s, remainder=%s, "
-                                    "net_to_fee_wallet=%s",
-                                    fee_commission_units, remainder, net_to_fee_wallet,
+                                actual_fee_commission = int(fee_est.commission or 0)
+                                # фактическое списание = predicted_fee_jetton + actual_fee_commission
+                                # суммарно с main = main_jetton + main_commission + predicted + actual
+                                total_spent = (
+                                    jetton_amount + main_commission_units
+                                    + predicted_fee_jetton + actual_fee_commission
                                 )
-                                # Минимальный осмысленный остаток ~ 0.01 USDT
-                                min_net = int(Decimal("0.01") * (Decimal(10) ** decimals))
-                                if net_to_fee_wallet >= min_net:
+                                expected_total = jetton_amount + budget_units
+                                log.info(
+                                    "send: gasless FEE est: predicted_jetton=%s "
+                                    "actual_commission=%s, total_spent=%s (target=%s)",
+                                    predicted_fee_jetton, actual_fee_commission,
+                                    total_spent, expected_total,
+                                )
+                                if predicted_fee_jetton >= min_net:
                                     await wallet.gasless_send(fee_est)
                                     log.info(
-                                        "send: gasless fee leg dispatched (~%s units to FEE_WALLET)",
-                                        net_to_fee_wallet,
-                                    )
-                                else:
-                                    log.info(
-                                        "send: fee remainder below threshold (%s < %s) — skip",
-                                        net_to_fee_wallet, min_net,
+                                        "send: gasless fee leg dispatched: %s units → FEE_WALLET",
+                                        predicted_fee_jetton,
                                     )
                             except Exception as exc:
                                 log.warning(

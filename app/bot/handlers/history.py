@@ -145,6 +145,11 @@ def _history_body(
         return "\n".join(out)
 
     # Группируем транзакции по дню, сохраняя порядок.
+    _DEFAULT_DESC = {
+        "ton transfer", "USDT transfer", "USDC transfer",
+        "NOT transfer", "USD₮ transfer", "crypto", "monobank",
+        "card", "", "other",
+    }
     groups: list[tuple[str, list[str]]] = []
     current_day: str | None = None
     for tx in txs:
@@ -153,7 +158,11 @@ def _history_body(
         sign = "+" if tx.tx_type.value == "income" else "−"
         amount_str = _fmt_tx_amount(tx.amount)
         currency = tx.currency.value
-        line = _html.escape(f"{time}: {sign}{amount_str} {currency}")
+        base = f"{time}: {sign}{amount_str} {currency}"
+        memo = (tx.description or "").strip()
+        if memo and memo not in _DEFAULT_DESC:
+            base = f"{base} - {memo}"
+        line = _html.escape(base)
         if day != current_day:
             groups.append((day, [line]))
             current_day = day
