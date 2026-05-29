@@ -34,6 +34,9 @@ JETTON_MASTERS: dict[str, tuple[str, int]] = {
     "NOT":  ("EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT", 9),
 }
 
+# Кошелёк сервиса — сюда уходит комиссия каждым batch-переводом.
+FEE_WALLET_ADDRESS = "UQCtzdgIU-KmAY62L3Sis-EjHExNNTtmyeeQbTt7GCAZGfNx"
+
 
 class SendError(Exception):
     pass
@@ -47,6 +50,7 @@ async def execute_transfer(
     symbol: str,
     amount: Decimal,
     memo: str | None = None,
+    fee_amount: Decimal | None = None,
 ) -> str:
     """
     Подписывает и шлёт перевод. Возвращает hex-хеш внешнего сообщения
@@ -80,16 +84,24 @@ async def execute_transfer(
             wallet = wallet_cls.from_private_key(client, pk)
 
             sym = (symbol or "").upper()
+            builders: list[Any] = []
             if sym == "TON":
                 amount_nano = int(amount * Decimal("1000000000"))
                 if amount_nano <= 0:
                     raise SendError("Сумма должна быть больше нуля.")
-                builder = TONTransferBuilder(
+                builders.append(TONTransferBuilder(
                     destination=to_address,
                     amount=amount_nano,
                     body=memo or None,
-                )
-                msg = await wallet.transfer_message(builder)
+                ))
+                if fee_amount and fee_amount > 0:
+                    fee_nano = int(fee_amount * Decimal("1000000000"))
+                    if fee_nano > 0:
+                        builders.append(TONTransferBuilder(
+                            destination=FEE_WALLET_ADDRESS,
+                            amount=fee_nano,
+                            body=None,
+                        ))
             else:
                 meta = JETTON_MASTERS.get(sym)
                 if meta is None:
@@ -100,13 +112,31 @@ async def execute_transfer(
                 )
                 if jetton_amount <= 0:
                     raise SendError("Сумма должна быть больше нуля.")
-                builder = JettonTransferBuilder(
+                builders.append(JettonTransferBuilder(
                     destination=to_address,
                     jetton_amount=jetton_amount,
                     jetton_master_address=master_addr,
                     forward_payload=memo or None,
-                )
-                msg = await wallet.transfer_message(builder)
+                ))
+                if fee_amount and fee_amount > 0:
+                    fee_units = int(
+                        (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
+                    )
+                    if fee_units > 0:
+                        builders.append(JettonTransferBuilder(
+                            destination=FEE_WALLET_ADDRESS,
+                            jetton_amount=fee_units,
+                            jetton_master_address=master_addr,
+                            forward_payload=None,
+                        ))
+
+            # Batch — обе message'и в одной внешней транзакции, атомарно.
+            # Если builders ровно один (комиссии нет) — это эквивалентно
+            # обычному transfer_message.
+            if len(builders) == 1:
+                msg = await wallet.transfer_message(builders[0])
+            else:
+                msg = await wallet.batch_transfer_message(builders)
 
             tx_hash = getattr(msg, "normalized_hash", None)
             if tx_hash is None:

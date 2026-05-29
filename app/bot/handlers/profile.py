@@ -793,6 +793,7 @@ async def _render_deposit_screen(
 
 async def render_crypto_main(
     *,
+    force_new: bool = False,
     bot: Bot,
     chat_id: int,
     panel_user_id: int,
@@ -980,6 +981,7 @@ async def render_crypto_main(
         ),
         parse_mode="HTML",
         disable_web_preview=True,
+        force_new=force_new,
     )
 
 
@@ -1391,6 +1393,12 @@ async def _execute_send(
             raise RuntimeError("Кошелёк без сохранённого seed — отправка невозможна.")
         seed_phrase = _cipher.decrypt(account.encrypted_secret)
 
+        # Комиссия в той же валюте — берём из ранее посчитанного _coin_fee.
+        coin = (state.get("coins") or {}).get(sym) or {}
+        fee_amount = coin.get("fee_amt") or Decimal("0")
+        if coin.get("fee_sym") != sym:
+            fee_amount = Decimal("0")  # batch требует одну валюту
+
         from app.services.send_service import execute_transfer, SendError
         try:
             tx_hash = await execute_transfer(
@@ -1400,6 +1408,7 @@ async def _execute_send(
                 symbol=sym,
                 amount=amount,
                 memo=memo,
+                fee_amount=fee_amount,
             )
         except SendError as exc:
             log_.warning("send refused: %s", exc)
@@ -2409,7 +2418,8 @@ async def crypto_callback(callback: CallbackQuery) -> None:
 
     if action.startswith("open_wallet:"):
         # Из уведомления о пополнении — переключаемся на нужный кошелёк
-        # и шлём новой сообщение с его балансом.
+        # и шлём НОВОЕ сообщение (force_new=True), чтобы сообщение про
+        # деп не пропало с заменой панели на кошелёк.
         try:
             acc_id = int(action.split(":", 1)[1])
         except ValueError:
@@ -2430,7 +2440,7 @@ async def crypto_callback(callback: CallbackQuery) -> None:
             pass
         await render_crypto_main(
             bot=bot, chat_id=chat_id, panel_user_id=uid,
-            telegram_id=uid, username=uname,
+            telegram_id=uid, username=uname, force_new=True,
         )
         return
 
