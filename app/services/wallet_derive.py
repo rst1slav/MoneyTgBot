@@ -94,22 +94,88 @@ def _try_tonsdk(words: list[str]) -> list[str]:
 
 
 def _try_bip39(words: list[str]) -> list[str]:
-    """BIP39 → BIP44 m/44'/607'/0' — Trust Wallet и пр."""
+    """
+    BIP39 деривация. Делаем три прохода для максимального покрытия:
+
+    A) Bip44.TON.DeriveDefaultPath → встроенный V3-адрес bip_utils
+       (Trust Wallet legacy и подобные).
+
+    B) SLIP-0010 ed25519 по path m/44'/607'/0' → достаём 32-байтный
+       private key и собираем W5R1 / V4R2 / V3R2 / V5Beta. Именно так
+       работает MyTonWallet при импорте 12/24-словного BIP39-сида —
+       стандартный bip_utils default path (m/44'/607'/0'/0/0) даёт
+       ДРУГОЙ ключ, поэтому без этого варианта мы их не ловим.
+
+    C) То же что B, но с альтернативными path'ами на случай если
+       клиент использует Ledger-style derivation.
+    """
     addrs: list[str] = []
     if len(words) not in {12, 15, 18, 21, 24}:
         return addrs
     try:
         from bip_utils import (
-            Bip39MnemonicValidator, Bip39SeedGenerator, Bip44, Bip44Coins,
+            Bip39MnemonicValidator, Bip39SeedGenerator,
+            Bip44, Bip44Coins, Bip32Slip10Ed25519,
         )
-        phrase = " ".join(words)
-        if not Bip39MnemonicValidator().IsValid(phrase):
-            return addrs
+    except Exception as exc:
+        log.info("bip_utils import failed: %s", exc)
+        return addrs
+
+    phrase = " ".join(words)
+    if not Bip39MnemonicValidator().IsValid(phrase):
+        return addrs
+
+    try:
         seed_bytes = Bip39SeedGenerator(phrase).Generate()
+    except Exception as exc:
+        log.info("bip39 seed gen failed: %s", exc)
+        return addrs
+
+    # A) старый путь — на случай Trust Wallet
+    try:
         acc = Bip44.FromSeed(seed_bytes, Bip44Coins.TON).DeriveDefaultPath()
         addrs.append(acc.PublicKey().ToAddress())
     except Exception as exc:
-        log.info("bip39 derivation failed: %s", exc)
+        log.info("bip39 Bip44 default failed: %s", exc)
+
+    # B+C) SLIP-0010 ed25519 → достаём приватный ключ и собираем все
+    # стандартные TON-версии через tonutils.
+    try:
+        from tonutils.contracts.wallet.versions.v5 import WalletV5R1, WalletV5Beta
+        from tonutils.contracts.wallet.versions.v4 import WalletV4R2, WalletV4R1
+        from tonutils.contracts.wallet.versions.v3 import WalletV3R2, WalletV3R1
+        from ton_core.contrib.types import PrivateKey
+    except Exception as exc:
+        log.info("tonutils for bip39 derivation unavailable: %s", exc)
+        return addrs
+
+    client = _mainnet_client()
+    paths = [
+        "m/44'/607'/0'",          # MyTonWallet, Tonkeeper-BIP39
+        "m/44'/607'/0'/0'",       # MTW старая вариация
+        "m/44'/607'/0'/0'/0'",    # Ledger-style
+        "m/44'/396'/0'/0'/0'",    # старый TON path до 607
+    ]
+    wallet_classes = (WalletV5R1, WalletV5Beta, WalletV4R2, WalletV4R1,
+                      WalletV3R2, WalletV3R1)
+
+    for path in paths:
+        try:
+            node = Bip32Slip10Ed25519.FromSeed(seed_bytes).DerivePath(path)
+            priv32 = node.PrivateKey().Raw().ToBytes()
+            if len(priv32) != 32:
+                continue
+            pk = PrivateKey(priv32)
+        except Exception as exc:
+            log.info("slip10 path %s failed: %s", path, exc)
+            continue
+        for cls in wallet_classes:
+            try:
+                w = cls.from_private_key(client, pk)
+                addrs.append(_addr_uq(w.address))
+                addrs.append(_addr_eq(w.address))
+            except Exception as exc:
+                log.info("bip39 %s @ %s failed: %s", cls.__name__, path, exc)
     return addrs
 
 
