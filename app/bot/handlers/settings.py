@@ -10,6 +10,8 @@ from app.bot.keyboards import (
     integrations_pending_keyboard,
     settings_currency_keyboard,
     settings_keyboard,
+    settings_limits_categories_keyboard,
+    settings_limits_wallet_keyboard,
     settings_language_keyboard,
     settings_timezone_keyboard,
 )
@@ -91,6 +93,62 @@ async def settings_callback(callback: CallbackQuery) -> None:
     if action == "open":
         await callback.answer()
         await render_settings_menu(bot=bot, chat_id=chat_id, telegram_id=uid, username=uname)
+        return
+
+    if action == "limits":
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        await callback.answer()
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=(
+                f"<b>{t('settings.limits.title', lang)}</b>\n\n"
+                f"{t('settings.limits.pick_section', lang)}"
+            ),
+            reply_markup=settings_limits_categories_keyboard(lang=lang),
+            parse_mode="HTML",
+        )
+        return
+
+    if action == "limits_wallet":
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+            mode = getattr(user, "fee_payment_mode", "same") or "same"
+        await callback.answer()
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=t("settings.limits.wallet.body", lang),
+            reply_markup=settings_limits_wallet_keyboard(lang=lang, mode=mode),
+            parse_mode="HTML",
+        )
+        return
+
+    if action in ("limits_p2p", "limits_misc"):
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            lang = getattr(user, "language", "ru") or "ru"
+        try:
+            await callback.answer(t("settings.limits.coming_soon", lang), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    if action == "fee_mode":
+        new_mode = arg if arg in {"same", "usdt", "ton"} else "same"
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            user.fee_payment_mode = new_mode
+            await db.commit()
+            lang = getattr(user, "language", "ru") or "ru"
+        await callback.answer(t("saved", lang))
+        await push_text_panel(
+            bot=bot, chat_id=chat_id, user_id=uid,
+            text=t("settings.limits.wallet.body", lang),
+            reply_markup=settings_limits_wallet_keyboard(lang=lang, mode=new_mode),
+            parse_mode="HTML",
+        )
         return
 
     if action == "tz":

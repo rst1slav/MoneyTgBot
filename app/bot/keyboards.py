@@ -133,11 +133,55 @@ def profile_crypto_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
 def settings_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=t("settings.timezone", lang), callback_data="set:tz")],
-            [InlineKeyboardButton(text=t("settings.language", lang), callback_data="set:lang")],
-            [InlineKeyboardButton(text=t("settings.currency", lang), callback_data="set:ccy")],
+            [
+                InlineKeyboardButton(text=t("settings.timezone", lang), callback_data="set:tz"),
+                InlineKeyboardButton(text=t("settings.language", lang), callback_data="set:lang"),
+            ],
+            [
+                InlineKeyboardButton(text=t("settings.currency", lang), callback_data="set:ccy"),
+                InlineKeyboardButton(text=t("settings.limits_fees", lang), callback_data="set:limits"),
+            ],
             [InlineKeyboardButton(text=t("settings.support", lang), url="https://t.me/rst1k")],
             [InlineKeyboardButton(text=t("back", lang), callback_data="menu:home")],
+        ]
+    )
+
+
+def settings_limits_categories_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t("settings.limits.wallet", lang), callback_data="set:limits_wallet")],
+            [
+                InlineKeyboardButton(text=t("settings.limits.p2p", lang), callback_data="set:limits_p2p"),
+                InlineKeyboardButton(text=t("settings.limits.misc", lang), callback_data="set:limits_misc"),
+            ],
+            [InlineKeyboardButton(text=t("back", lang), callback_data="menu:settings")],
+        ]
+    )
+
+
+def settings_limits_wallet_keyboard(lang: str = "ru", *, mode: str = "same") -> InlineKeyboardMarkup:
+    """mode ∈ {'same', 'usdt', 'ton'} → подсветка зелёным выбранной кнопки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=t("settings.limits.fee_mode.same", lang),
+                callback_data="set:fee_mode:same",
+                style="success" if mode == "same" else None,
+            )],
+            [
+                InlineKeyboardButton(
+                    text=t("settings.limits.fee_mode.usdt", lang),
+                    callback_data="set:fee_mode:usdt",
+                    style="success" if mode == "usdt" else None,
+                ),
+                InlineKeyboardButton(
+                    text=t("settings.limits.fee_mode.ton", lang),
+                    callback_data="set:fee_mode:ton",
+                    style="success" if mode == "ton" else None,
+                ),
+            ],
+            [InlineKeyboardButton(text=t("back", lang), callback_data="set:limits")],
         ]
     )
 

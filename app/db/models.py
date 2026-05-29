@@ -51,6 +51,7 @@ class User(Base):
     timezone: Mapped[str] = mapped_column(String(64), default="Europe/Kyiv")
     base_currency: Mapped[Currency] = mapped_column(Enum(Currency), default=Currency.UAH)
     language: Mapped[str] = mapped_column(String(8), default="ru")
+    fee_payment_mode: Mapped[str] = mapped_column(String(16), default="same")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     accounts: Mapped[list[Account]] = relationship(back_populates="user")

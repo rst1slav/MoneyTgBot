@@ -31,6 +31,7 @@ _PENDING_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("accounts", "is_favorite", "BOOLEAN DEFAULT 0"),
     ("accounts", "sort_order", "INTEGER DEFAULT 0"),
     ("transactions", "notified", "BOOLEAN DEFAULT 1"),  # 1: don't spam users for legacy rows
+    ("users", "fee_payment_mode", "VARCHAR(16) DEFAULT 'same'"),
 ]
 
 

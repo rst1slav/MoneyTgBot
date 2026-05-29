@@ -91,8 +91,10 @@ _pending_send_memo: set[int] = set()
 # Минимальная сумма перевода на TON-сети — фикс. константа в TON, остальные
 # монеты конвертим по их usd_price.
 SEND_MIN_TON = Decimal("0.0000001")
-# Комиссия — фиксированный $0.2 в эквиваленте, конвертим в монету по её курсу.
-SEND_FEE_USD = Decimal("0.2")
+# Комиссия: фиксированный USD-эквивалент. $0.25 если оплачивается в той же
+# валюте, что отправляется; $0.35 если в другой (USDT или TON).
+SEND_FEE_USD_SAME = Decimal("0.25")
+SEND_FEE_USD_OTHER = Decimal("0.35")
 
 COINS_PER_PAGE = 8
 COIN_LINKS: dict[str, str] = {
@@ -1034,21 +1036,38 @@ def _coin_min_amount(symbol: str, unit_usd: Decimal | None, ton_price: Decimal |
     return (SEND_MIN_TON * ton_price / unit_usd).quantize(Decimal("0.0000001"))
 
 
-def _coin_fee(symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None) -> tuple[Decimal, str]:
+def _coin_fee(
+    symbol: str, unit_usd: Decimal | None, ton_price: Decimal | None,
+    *, fee_mode: str = "same",
+) -> tuple[Decimal, str]:
     """
-    (fee_amount, fee_symbol). Фикс $0.2 в эквиваленте — конвертим в саму
-    монету по её цене. Если цены нет — отдаём ноль (но это редко, т.к.
-    мы фильтруем монеты по балансу заранее).
+    (fee_amount, fee_symbol). Учитывает режим оплаты комиссии:
+      same — берём в той же валюте, $0.25;
+      usdt — всегда в USDT, $0.35 (если sym != USDT);
+      ton  — всегда в TON,  $0.35 (если sym != TON).
+    Если режим = «другой», но мы и так в нужной валюте — это same.
     """
     sym = symbol.upper()
-    if sym == "TON":
+    target_sym = sym
+    if fee_mode == "usdt" and sym != "USDT":
+        target_sym = "USDT"
+    elif fee_mode == "ton" and sym != "TON":
+        target_sym = "TON"
+
+    use_other_fee = (target_sym != sym)
+    fee_usd = SEND_FEE_USD_OTHER if use_other_fee else SEND_FEE_USD_SAME
+
+    if target_sym == "TON":
         unit = ton_price
+    elif target_sym == "USDT":
+        unit = Decimal("1")  # стейбл 1:1
     else:
         unit = unit_usd
+
     if not unit or unit <= 0:
-        return Decimal("0"), sym
-    fee = (SEND_FEE_USD / unit).quantize(Decimal("0.00000001"))
-    return fee, sym
+        return Decimal("0"), target_sym
+    fee = (fee_usd / unit).quantize(Decimal("0.00000001"))
+    return fee, target_sym
 
 
 async def _render_send_pick_coin(
@@ -1057,6 +1076,7 @@ async def _render_send_pick_coin(
     async with SessionLocal() as db:
         user = await ledger.ensure_user(db, uid, uname)
         lang = getattr(user, "language", "ru") or "ru"
+        fee_mode = getattr(user, "fee_payment_mode", "same") or "same"
         accounts = await ledger.get_active_accounts_by_type(
             db, user.id, AccountType.TON_WALLET,
         )
@@ -1076,7 +1096,9 @@ async def _render_send_pick_coin(
         if not c["amount"] or c["amount"] <= 0:
             continue
         min_amt = _coin_min_amount(c["symbol"], c["unit_usd"], ton_price)
-        fee_amt, fee_sym = _coin_fee(c["symbol"], c["unit_usd"], ton_price)
+        fee_amt, fee_sym = _coin_fee(
+            c["symbol"], c["unit_usd"], ton_price, fee_mode=fee_mode,
+        )
         # Чтобы вывести жетон — нужен ещё TON-газ. Не отсекаем тут (это проверим
         # при выборе), но минимум по самому жетону должен влезать.
         if c["amount"] >= min_amt:

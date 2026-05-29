@@ -121,6 +121,26 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.currency": "💱 Основная валюта",
         "settings.currency_label": "Основная валюта",
         "settings.currency_hint": "К ней будут конвертироваться суммы в первую очередь.",
+        "settings.limits_fees": "📊 Лимиты и комиссии",
+        "settings.limits.title": "📊 Лимиты и комиссии",
+        "settings.limits.pick_section": "Выберите нужный раздел для просмотра комиссий и лимитов, а также их настройки:",
+        "settings.limits.wallet": "Кошелёк",
+        "settings.limits.p2p": "P2P",
+        "settings.limits.misc": "Прочее",
+        "settings.limits.coming_soon": "Скоро будет доступно.",
+        "settings.limits.wallet.body": (
+            "<b>📊 Лимиты и комиссии</b>\n\n"
+            "<b>Лимиты:</b>\n"
+            " · Пополнение: от 0.1 USD\n"
+            " · Отправка: от 0.1 USD\n\n"
+            "<b>Комиссии:</b>\n"
+            " · Комиссия отправки: 0.25 USD\n"
+            " · Комиссия отправки в валюте, отличающейся от отправляемой: 0.35 USD\n\n"
+            "<b>Выберите способ оплаты комиссий из вариантов ниже:</b>"
+        ),
+        "settings.limits.fee_mode.same": "В отправляемой валюте",
+        "settings.limits.fee_mode.usdt": "Всегда в USDT",
+        "settings.limits.fee_mode.ton": "Всегда в TON",
         "settings.support": "💬 Написать в поддержку",
         "settings.tz_pick_hint": "Выберите из списка или укажите свой.",
         "settings.tz_custom": "✏️ Свой...",
@@ -474,6 +494,26 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.currency": "💱 Primary currency",
         "settings.currency_label": "Primary currency",
         "settings.currency_hint": "Amounts are converted to it by default.",
+        "settings.limits_fees": "📊 Limits & fees",
+        "settings.limits.title": "📊 Limits & fees",
+        "settings.limits.pick_section": "Choose a section to view its fees, limits, and settings:",
+        "settings.limits.wallet": "Wallet",
+        "settings.limits.p2p": "P2P",
+        "settings.limits.misc": "Other",
+        "settings.limits.coming_soon": "Coming soon.",
+        "settings.limits.wallet.body": (
+            "<b>📊 Limits & fees</b>\n\n"
+            "<b>Limits:</b>\n"
+            " · Deposit: from 0.1 USD\n"
+            " · Send: from 0.1 USD\n\n"
+            "<b>Fees:</b>\n"
+            " · Send fee: 0.25 USD\n"
+            " · Send fee in a currency different from the one sent: 0.35 USD\n\n"
+            "<b>Pick how you want to pay fees from the options below:</b>"
+        ),
+        "settings.limits.fee_mode.same": "In the sent currency",
+        "settings.limits.fee_mode.usdt": "Always in USDT",
+        "settings.limits.fee_mode.ton": "Always in TON",
         "settings.support": "💬 Contact support",
         "settings.tz_pick_hint": "Pick one or enter your own.",
         "settings.tz_custom": "✏️ Custom...",
@@ -787,6 +827,26 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "settings.currency": "💱 Основна валюта",
         "settings.currency_label": "Основна валюта",
         "settings.currency_hint": "До неї будуть конвертуватись суми в першу чергу.",
+        "settings.limits_fees": "📊 Ліміти та комісії",
+        "settings.limits.title": "📊 Ліміти та комісії",
+        "settings.limits.pick_section": "Виберіть потрібний розділ для перегляду комісій і лімітів, а також їх налаштування:",
+        "settings.limits.wallet": "Гаманець",
+        "settings.limits.p2p": "P2P",
+        "settings.limits.misc": "Інше",
+        "settings.limits.coming_soon": "Скоро буде доступно.",
+        "settings.limits.wallet.body": (
+            "<b>📊 Ліміти та комісії</b>\n\n"
+            "<b>Ліміти:</b>\n"
+            " · Поповнення: від 0.1 USD\n"
+            " · Надсилання: від 0.1 USD\n\n"
+            "<b>Комісії:</b>\n"
+            " · Комісія надсилання: 0.25 USD\n"
+            " · Комісія надсилання у валюті, відмінній від тієї, яку надсилаєте: 0.35 USD\n\n"
+            "<b>Виберіть спосіб оплати комісій з варіантів нижче:</b>"
+        ),
+        "settings.limits.fee_mode.same": "У валюті надсилання",
+        "settings.limits.fee_mode.usdt": "Завжди в USDT",
+        "settings.limits.fee_mode.ton": "Завжди в TON",
         "settings.support": "💬 Написати в підтримку",
         "settings.tz_pick_hint": "Виберіть зі списку або вкажіть свій.",
         "settings.tz_custom": "✏️ Свій...",
