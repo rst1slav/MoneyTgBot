@@ -90,66 +90,125 @@ class TonService:
         ).scalars().first()
 
     async def sync_transactions(self, db: AsyncSession, account: Account) -> int:
-        url = f"{self.settings.ton_api_url}/blockchain/accounts/{account.external_ref}/transactions"
+        """
+        Парсит /accounts/{addr}/events tonapi и записывает новые TonTransfer
+        и JettonTransfer (USDT/USDC/…) в transactions. Возвращает количество
+        вставленных строк. Новые income-строки сохраняются с notified=False
+        — их подхватит фоновый воркер уведомлений.
+        """
+        inserted_objs = await self._sync_via_events(db, account)
+        await db.commit()
+        return len(inserted_objs)
+
+    async def _sync_via_events(
+        self, db: AsyncSession, account: Account,
+    ) -> list[Transaction]:
+        addr = account.external_ref
+        url = f"{self.settings.ton_api_url}/accounts/{addr}/events"
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.get(url, params={"limit": 50})
                 response.raise_for_status()
-                txs = response.json().get("transactions", [])
+                events = response.json().get("events", []) or []
         except (httpx.HTTPError, ValueError):
-            return 0
+            return []
 
-        inserted = 0
-        for item in txs:
-            ext_id = item.get("hash")
-            if not ext_id:
+        owner_addrs = {self._normalize(addr)}
+        inserted: list[Transaction] = []
+        for event in events:
+            event_id = event.get("event_id")
+            if not event_id:
                 continue
-            exists = (
-                await db.execute(select(Transaction.id).where(Transaction.external_tx_id == ext_id))
-            ).scalar_one_or_none()
-            if exists:
-                continue
-            
-            # TON API v2 /blockchain/accounts/.../transactions structure:
-            # The value is usually in out_msgs or in_msg.
-            # Let's try to find the actual value transfer.
-            raw_value = 0
-            in_msg = item.get("in_msg", {})
-            if in_msg and in_msg.get("value"):
-                raw_value = int(in_msg["value"])
-            
-            if raw_value == 0:
-                out_msgs = item.get("out_msgs", [])
-                if out_msgs:
-                    raw_value = sum(int(m.get("value", 0)) for m in out_msgs)
-            
-            # If still 0, it might be a simple transfer where value is at top level in some API versions
-            if raw_value == 0:
-                raw_value = int(item.get("total_fees", 0)) # Fallback to fee if no value? No, let's keep searching.
-            
-            value = Decimal(str(abs(raw_value))) / Decimal("1000000000")
-            direction = TransactionType.INCOME if (in_msg and int(in_msg.get("value", 0)) > 0) else TransactionType.EXPENSE
-            created_at = (
-                datetime.utcfromtimestamp(item["utime"])
-                if isinstance(item.get("utime"), int)
-                else datetime.utcnow()
-            )
-            db.add(
-                Transaction(
+            actions = event.get("actions") or []
+            timestamp = event.get("timestamp")
+            for ai, action in enumerate(actions):
+                # Уникальный external_tx_id: event_id + индекс action,
+                # т.к. одно событие может содержать несколько переводов.
+                ext_id = f"{event_id}#{ai}"
+                exists = (
+                    await db.execute(
+                        select(Transaction.id).where(Transaction.external_tx_id == ext_id)
+                    )
+                ).scalar_one_or_none()
+                if exists:
+                    continue
+                parsed = self._parse_action(action, owner_addrs)
+                if parsed is None:
+                    continue
+                amount, currency, direction, description = parsed
+                created_at = (
+                    datetime.utcfromtimestamp(timestamp)
+                    if isinstance(timestamp, int) else datetime.utcnow()
+                )
+                tx = Transaction(
                     user_id=account.user_id,
                     account_id=account.id,
                     tx_type=direction,
-                    amount=value,
-                    currency=Currency.TON,
+                    amount=amount,
+                    currency=currency,
                     category="crypto",
-                    description="ton transfer",
+                    description=description,
                     external_tx_id=ext_id,
                     created_at=created_at,
+                    notified=(direction != TransactionType.INCOME),
                 )
-            )
-            inserted += 1
-        await db.commit()
+                db.add(tx)
+                inserted.append(tx)
         return inserted
+
+    @staticmethod
+    def _normalize(addr: str | None) -> str:
+        if not addr:
+            return ""
+        # tonapi обычно возвращает raw-формат вида "0:abcd..." — сравнение
+        # с external_ref (UQ/EQ) делаем через hash_part. Упрощаем: режем
+        # префиксы и нижний регистр для best-effort матча.
+        return addr.strip().lower().split(":")[-1][:48]
+
+    def _parse_action(
+        self, action: dict, owner_addrs: set[str],
+    ) -> tuple[Decimal, Currency, TransactionType, str] | None:
+        atype = action.get("type")
+        if atype == "TonTransfer":
+            data = action.get("TonTransfer") or {}
+            recipient = (data.get("recipient") or {}).get("address") or ""
+            sender = (data.get("sender") or {}).get("address") or ""
+            raw_amount = int(data.get("amount", 0) or 0)
+            amount = Decimal(str(raw_amount)) / Decimal("1000000000")
+            is_income = self._normalize(recipient) in owner_addrs
+            return (
+                amount,
+                Currency.TON,
+                TransactionType.INCOME if is_income else TransactionType.EXPENSE,
+                (data.get("comment") or "ton transfer")[:255],
+            )
+        if atype == "JettonTransfer":
+            data = action.get("JettonTransfer") or {}
+            jetton = data.get("jetton") or {}
+            symbol = (jetton.get("symbol") or "").upper().replace("₮", "T")
+            try:
+                decimals = int(jetton.get("decimals", 9))
+            except Exception:
+                decimals = 9
+            try:
+                raw_amount = int(data.get("amount", 0) or 0)
+            except Exception:
+                raw_amount = 0
+            amount = Decimal(str(raw_amount)) / Decimal(10 ** decimals)
+            recipient = (data.get("recipient") or {}).get("address") or ""
+            is_income = self._normalize(recipient) in owner_addrs
+            try:
+                currency = Currency(symbol)
+            except ValueError:
+                # Неизвестный жетон — пропускаем, чтобы не плодить мусорные строки.
+                return None
+            return (
+                amount,
+                currency,
+                TransactionType.INCOME if is_income else TransactionType.EXPENSE,
+                (data.get("comment") or f"{symbol} transfer")[:255],
+            )
+        return None
 
     async def get_live_balance_ton(self, account: Account) -> Decimal | None:
         url = f"{self.settings.ton_api_url}/blockchain/accounts/{account.external_ref}"

@@ -30,6 +30,7 @@ _PENDING_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("users", "language", "VARCHAR(8) DEFAULT 'ru'"),
     ("accounts", "is_favorite", "BOOLEAN DEFAULT 0"),
     ("accounts", "sort_order", "INTEGER DEFAULT 0"),
+    ("transactions", "notified", "BOOLEAN DEFAULT 1"),  # 1: don't spam users for legacy rows
 ]
 
 
@@ -157,7 +158,7 @@ async def run_bot() -> None:
     await init_db(engine)
     bot = create_bot()
     dispatcher = create_dispatcher()
-    scheduler = create_scheduler()
+    scheduler = create_scheduler(bot=bot)
     scheduler.start()
     try:
         await dispatcher.start_polling(bot)

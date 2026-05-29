@@ -1921,6 +1921,33 @@ async def crypto_callback(callback: CallbackQuery) -> None:
             pass
         return
 
+    if action.startswith("open_wallet:"):
+        # Из уведомления о пополнении — переключаемся на нужный кошелёк
+        # и шлём новой сообщение с его балансом.
+        try:
+            acc_id = int(action.split(":", 1)[1])
+        except ValueError:
+            return
+        async with SessionLocal() as db:
+            user = await ledger.ensure_user(db, uid, uname)
+            accounts = await ledger.get_active_accounts_by_type(
+                db, user.id, AccountType.TON_WALLET,
+            )
+        for i, acc in enumerate(accounts):
+            if acc.id == acc_id:
+                _current_wallet_idx[uid] = i
+                break
+        _current_coin_page[uid] = 1
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
+        await render_crypto_main(
+            bot=bot, chat_id=chat_id, panel_user_id=uid,
+            telegram_id=uid, username=uname,
+        )
+        return
+
     if action == "fav":
         async with SessionLocal() as db:
             user = await ledger.ensure_user(db, uid, uname)

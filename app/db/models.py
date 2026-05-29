@@ -19,6 +19,7 @@ class Currency(str, enum.Enum):
     BYN = "BYN"
     PLN = "PLN"
     UZS = "UZS"
+    USDT = "USDT"
 
 
 class TransactionType(str, enum.Enum):
@@ -85,6 +86,7 @@ class Transaction(Base):
     category: Mapped[str] = mapped_column(String(128), default="other")
     description: Mapped[str] = mapped_column(String(512), default="")
     external_tx_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    notified: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     account: Mapped[Account] = relationship(back_populates="transactions")
