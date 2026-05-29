@@ -99,6 +99,24 @@ def _add_pending_outgoing(account_id: int, sym: str, amount: Decimal, baseline: 
         bucket[sym] = {"amount": amount, "baseline": baseline}
 
 
+def _rollback_pending_outgoing(account_id: int, sym: str, amount: Decimal) -> None:
+    """Если отправка упала — снимаем зарегистрированный pending."""
+    bucket = _pending_outgoing.get(account_id)
+    if not bucket:
+        return
+    sym = (sym or "").upper()
+    entry = bucket.get(sym)
+    if not entry:
+        return
+    new_amt = entry["amount"] - amount
+    if new_amt <= 0:
+        bucket.pop(sym, None)
+        if not bucket:
+            _pending_outgoing.pop(account_id, None)
+    else:
+        entry["amount"] = new_amt
+
+
 def _apply_pending(account_id: int, sym: str, onchain: Decimal) -> Decimal:
     """
     Возвращает оптимистичный баланс = onchain - pending, и очищает
@@ -1480,14 +1498,24 @@ async def _execute_send(
         )
 
         from app.services.send_service import execute_transfer, SendError
-        # Запоминаем «исходящие в полёте» суммы ДО отправки чтобы
-        # оптимистично уменьшить баланс в render_crypto_main даже если
-        # tonapi ещё не догнал. Берём текущий баланс как baseline.
+        # Регистрируем оптимистичное списание ДО фактической отправки, чтобы
+        # юзер сразу видел уменьшенный баланс (запрос может занять 5-15 сек
+        # из-за gasless API, а юзер обычно сразу жмёт «Кошелёк»).
+        sym_up = sym.upper()
+        total_out = amount + (
+            fee_amount if (coin.get("fee_sym") == sym and fee_amount) else Decimal("0")
+        )
         try:
             baseline_coins, _ = await _fetch_wallet_coins(account)
             baseline_map = {c["symbol"].upper(): c["amount"] for c in baseline_coins}
         except Exception:
             baseline_map = {}
+        baseline = baseline_map.get(sym_up, Decimal("0"))
+        _add_pending_outgoing(account.id, sym_up, total_out, baseline)
+        log_.info(
+            "send: pending registered acc=%s sym=%s out=%s baseline=%s",
+            account.id, sym_up, total_out, baseline,
+        )
         try:
             tx_hash = await execute_transfer(
                 seed_phrase=seed_phrase,
@@ -1500,6 +1528,8 @@ async def _execute_send(
             )
         except SendError as exc:
             log_.warning("send refused: %s", exc)
+            # Откат оптимистичного списания — реально ничего не ушло.
+            _rollback_pending_outgoing(account.id, sym_up, total_out)
             try:
                 await bot.send_message(
                     chat_id=uid,
@@ -1509,16 +1539,6 @@ async def _execute_send(
             except Exception:
                 pass
             return
-
-        # Регистрируем оптимистичное списание. Сетевой подтверждение займёт
-        # несколько секунд, но юзеру в кошельке цифра должна обновиться
-        # сразу.
-        sym_up = sym.upper()
-        total_out = amount + (
-            fee_amount if (coin.get("fee_sym") == sym and fee_amount) else Decimal("0")
-        )
-        baseline = baseline_map.get(sym_up, Decimal("0"))
-        _add_pending_outgoing(account.id, sym_up, total_out, baseline)
 
         tonviewer = (
             f"https://tonviewer.com/transaction/{tx_hash}"
@@ -1534,6 +1554,12 @@ async def _execute_send(
         log_.info("send execute done uid=%s tx=%s pending=%s", uid, tx_hash, total_out)
     except Exception as exc:
         log_.exception("send execute failed: %s", exc)
+        # Тоже откатываем pending — если pending был зарегистрирован,
+        # переменные ниже могут не быть определены, поэтому пробуем.
+        try:
+            _rollback_pending_outgoing(account.id, sym_up, total_out)
+        except Exception:
+            pass
         try:
             await bot.send_message(
                 chat_id=uid,
