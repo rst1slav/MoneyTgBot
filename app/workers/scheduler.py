@@ -113,8 +113,20 @@ async def _notify_new_incomes(bot: Bot) -> None:
                 else:
                     money_part = f"<b>{amt_str} {coin_sym}</b>"
 
+                # external_tx_id = "{event_id}#{action_idx}" — для tonviewer
+                # нужен только event_id.
+                event_id = (tx.external_tx_id or "").split("#", 1)[0]
+                tonviewer_url = (
+                    f"https://tonviewer.com/transaction/{event_id}"
+                    if event_id else None
+                )
+                received_word = (
+                    f'<a href="{tonviewer_url}">получили</a>'
+                    if tonviewer_url else "получили"
+                )
+
                 text = (
-                    f"📥 Вы получили {money_part} на "
+                    f"📥 Вы {received_word} {money_part} на "
                     f"{_html.escape(wallet_label)} "
                     f"(<code>{_html.escape(short_addr)}</code>)."
                 )

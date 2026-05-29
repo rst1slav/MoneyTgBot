@@ -158,12 +158,22 @@ class TonService:
 
     @staticmethod
     def _normalize(addr: str | None) -> str:
+        """
+        Канонизируем адрес в hex hash_part через pytoniq_core.Address.
+        Это умеет парсить и raw ('0:hex…'), и friendly (UQ/EQ base64url) форму
+        и приводит всё к одному хешу. Без этого сравнение чужого 'recipient'
+        от tonapi (raw hex) с нашим external_ref (UQ-base64) НИКОГДА не
+        совпадало → всё помечалось EXPENSE и уведомления не шли.
+        """
         if not addr:
             return ""
-        # tonapi обычно возвращает raw-формат вида "0:abcd..." — сравнение
-        # с external_ref (UQ/EQ) делаем через hash_part. Упрощаем: режем
-        # префиксы и нижний регистр для best-effort матча.
-        return addr.strip().lower().split(":")[-1][:48]
+        try:
+            from pytoniq_core.boc.address import Address
+            a = Address(addr.strip())
+            # hash_part — bytes(32). Сравниваем по hex.
+            return a.hash_part.hex()
+        except Exception:
+            return addr.strip().lower()
 
     def _parse_action(
         self, action: dict, owner_addrs: set[str],
