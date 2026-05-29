@@ -76,6 +76,10 @@ _last_generated_seed: dict[int, str] = {}    # user_id → just-generated seed (
 # временно не возвращает котировку, — чтобы стоимость в скобках не пропадала.
 # Ключ — символ монеты в верхнем регистре.
 _last_unit_price_usd: dict[str, Decimal] = {}
+# Запас на отклонение relay-комиссии в gasless-режиме: на main и fee leg
+# tonapi берёт по своей комиссии, и если Max впритык — fee leg не пройдёт.
+# Резервируем 0.05 USDT-эквивалента сверху от комиссии, чтобы хватило.
+SEND_GASLESS_BUFFER_USD = Decimal("0.05")
 # После успешной отправки запоминаем «исходящие в полёте» суммы по
 # (account_id, symbol). render_crypto_main вычитает их из ончейн-баланса,
 # чтобы юзер сразу видел новую цифру и не пытался отправить второй раз.
@@ -1279,8 +1283,17 @@ async def _render_send_amount(
         "",
     ]
     # Считаем "максимум для отправки" с учётом комиссии (если та в той же монете).
+    # В gasless-режиме нам ещё надо отрезать запас на relay комиссию fee leg:
+    # фактически списывается amount + budget + commission_fee_leg, а не amount+budget.
     if coin["fee_sym"] == sym:
-        max_amt = max(Decimal("0"), coin["amount"] - coin["fee_amt"])
+        gasless_reserve = (
+            (SEND_GASLESS_BUFFER_USD / (coin.get("unit_usd") or Decimal("1")))
+            if sym.upper() in {"USDT", "USDC", "TON"}
+            else Decimal("0")
+        )
+        max_amt = max(
+            Decimal("0"), coin["amount"] - coin["fee_amt"] - gasless_reserve,
+        )
     else:
         max_amt = coin["amount"]
     max_str = _format_coin_amount(max_amt)
@@ -3268,7 +3281,14 @@ async def crypto_callback(callback: CallbackQuery) -> None:
         if not coin:
             return
         if coin["fee_sym"] == sym:
-            max_amt = max(Decimal("0"), coin["amount"] - coin["fee_amt"])
+            gasless_reserve = (
+                (SEND_GASLESS_BUFFER_USD / (coin.get("unit_usd") or Decimal("1")))
+                if (sym or "").upper() in {"USDT", "USDC", "TON"}
+                else Decimal("0")
+            )
+            max_amt = max(
+                Decimal("0"), coin["amount"] - coin["fee_amt"] - gasless_reserve,
+            )
         else:
             max_amt = coin["amount"]
         st["amount"] = max_amt
