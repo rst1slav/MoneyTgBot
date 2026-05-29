@@ -122,22 +122,13 @@ async def execute_transfer(
                 if jetton_amount <= 0:
                     raise SendError("Сумма должна быть больше нуля.")
                 try:
-                    # 1) Основной перевод на адрес получателя.
-                    estimate = await wallet.gasless_estimate(
-                        destination=to_address,
-                        jetton_amount=jetton_amount,
-                        jetton_master_address=master_addr,
-                        forward_payload=memo or None,
-                    )
-                    log.info(
-                        "send: gasless main est ok, relay=%s commission=%s",
-                        estimate.relay_address, estimate.commission,
-                    )
-                    await wallet.gasless_send(estimate)
-
-                    # 2) Наша комиссия — отдельный gasless-перевод на
-                    # FEE_WALLET. Второй вызов чтобы наш сервис тоже
-                    # получал плату, а не только relay.
+                    # Сначала — комиссия сервису. Делаем ПЕРВОЙ, чтобы если
+                    # юзеру не хватит баланса на главный — всё-таки забрали
+                    # хотя бы fee. И главное: после первой gasless-транзы
+                    # seqno на блокчейне инкрементнётся, а вторая
+                    # gasless_estimate подхватит свежий → не будет
+                    # replay-rejection.
+                    fee_sent = False
                     if fee_amount and fee_amount > 0:
                         fee_units = int(
                             (fee_amount * (Decimal(10) ** decimals)).to_integral_value()
@@ -149,16 +140,40 @@ async def execute_transfer(
                                     jetton_amount=fee_units,
                                     jetton_master_address=master_addr,
                                 )
-                                await wallet.gasless_send(fee_est)
                                 log.info(
-                                    "send: gasless fee est ok, commission=%s",
-                                    fee_est.commission,
+                                    "send: gasless FEE est ok, relay=%s commission=%s, units=%s",
+                                    fee_est.relay_address, fee_est.commission, fee_units,
                                 )
+                                await wallet.gasless_send(fee_est)
+                                fee_sent = True
+                                log.info("send: gasless fee leg dispatched")
                             except Exception as exc:
                                 log.warning(
-                                    "send: gasless fee leg failed: %s — main went through",
+                                    "send: gasless fee leg failed: %s",
                                     exc,
                                 )
+
+                    # Если первый блок прошёл — ждём чтобы relay
+                    # опубликовал транзу и seqno в сети обновился. Без
+                    # паузы вторая gasless_estimate увидит старый seqno и
+                    # вернёт replay-rejection.
+                    if fee_sent:
+                        import asyncio as _aio
+                        await _aio.sleep(7)
+                        await wallet.refresh()
+
+                    # 2) Основной перевод на адрес получателя.
+                    estimate = await wallet.gasless_estimate(
+                        destination=to_address,
+                        jetton_amount=jetton_amount,
+                        jetton_master_address=master_addr,
+                        forward_payload=memo or None,
+                    )
+                    log.info(
+                        "send: gasless MAIN est ok, relay=%s commission=%s, units=%s",
+                        estimate.relay_address, estimate.commission, jetton_amount,
+                    )
+                    await wallet.gasless_send(estimate)
                     return ""
                 except Exception as exc:
                     log.warning("send: gasless attempt failed (%s)", exc)
