@@ -43,15 +43,23 @@ def _try_tonutils(words: list[str]) -> list[str]:
     if len(words) != 24:
         return addrs
     try:
-        from tonutils.contracts.wallet.versions.v5 import WalletV5R1
+        from tonutils.contracts.wallet.versions.v5 import WalletV5R1, WalletV5Beta
         from tonutils.contracts.wallet.versions.v4 import WalletV4R2, WalletV4R1
         from tonutils.contracts.wallet.versions.v3 import WalletV3R2, WalletV3R1
+        from tonutils.contracts.wallet.versions.v2 import WalletV2R2, WalletV2R1
+        from tonutils.contracts.wallet.versions.v1 import WalletV1R3, WalletV1R2, WalletV1R1
     except ImportError as exc:
         log.warning("tonutils not available: %s", exc)
         return addrs
 
     client = _mainnet_client()
-    for cls in (WalletV5R1, WalletV4R2, WalletV4R1, WalletV3R2, WalletV3R1):
+    for cls in (
+        WalletV5R1, WalletV5Beta,
+        WalletV4R2, WalletV4R1,
+        WalletV3R2, WalletV3R1,
+        WalletV2R2, WalletV2R1,
+        WalletV1R3, WalletV1R2, WalletV1R1,
+    ):
         try:
             wallet, _, _, _ = cls.from_mnemonic(client, words, validate=False)
             # И UQ, и EQ — на tonapi оба ссылаются на один аккаунт, но мы хотим
@@ -123,65 +131,101 @@ def derive_all_candidates(seed: str) -> list[str]:
     return out
 
 
+async def _score_address(client: httpx.AsyncClient, addr: str) -> tuple[float, int]:
+    """
+    Возвращает (usd_value, tx_count) для адреса.
+      * usd_value — баланс TON в нанотонах + сумма стейблов в USD (1:1)
+      * tx_count — число транзакций (для tie-break)
+    Если адрес пустой и без истории — оба нуля.
+    """
+    usd_value = 0.0
+    tx_count = 0
+    # 1. TON-баланс (в нанотонах — как «вес»; для сравнения этого достаточно).
+    try:
+        r = await client.get(f"https://tonapi.io/v2/accounts/{addr}")
+        if r.status_code == 200:
+            data = r.json()
+            status = (data.get("status") or "").lower()
+            bal_nano = int(data.get("balance", 0) or 0)
+            # Грубо: 1 TON ≈ $3 (нам не нужен точный курс, нужно сравнить кошельки
+            # одной seed между собой; масштаб одинаков).
+            usd_value += (bal_nano / 1e9) * 3.0
+            log.info(
+                "score[%s] status=%s ton_balance=%.6f",
+                addr[:12], status, bal_nano / 1e9,
+            )
+    except Exception as exc:
+        log.info("score[%s] account fetch failed: %s", addr[:12], exc)
+    # 2. Жетоны — стейблы считаем 1:1, остальное прикидываем по price.prices.USD.
+    try:
+        r = await client.get(
+            f"https://tonapi.io/v2/accounts/{addr}/jettons",
+            params={"currencies": "usd"},
+        )
+        if r.status_code == 200:
+            balances = r.json().get("balances") or []
+            for entry in balances:
+                jet = entry.get("jetton") or {}
+                symbol = (jet.get("symbol") or "").upper()
+                try:
+                    decimals = int(jet.get("decimals", 9))
+                    amt = int(entry.get("balance", 0) or 0) / (10 ** decimals)
+                except Exception:
+                    continue
+                if amt <= 0:
+                    continue
+                if symbol in {"USDT", "USDC", "DAI", "USD₮"} or "USD" in symbol:
+                    usd_value += amt
+                else:
+                    price = (entry.get("price") or {}).get("prices") or {}
+                    usd_price = price.get("USD") or price.get("usd")
+                    if usd_price:
+                        try:
+                            usd_value += amt * float(usd_price)
+                        except Exception:
+                            pass
+            if balances:
+                log.info("score[%s] jettons=%d", addr[:12], len(balances))
+    except Exception as exc:
+        log.info("score[%s] jettons fetch failed: %s", addr[:12], exc)
+    # 3. История — как tie-break, если балансов нет, но кошелёк когда-то использовался.
+    try:
+        r = await client.get(
+            f"https://tonapi.io/v2/blockchain/accounts/{addr}/transactions",
+            params={"limit": 50},
+        )
+        if r.status_code == 200:
+            txs = r.json().get("transactions") or []
+            tx_count = len(txs)
+            if tx_count:
+                log.info("score[%s] tx_count=%d", addr[:12], tx_count)
+    except Exception as exc:
+        log.info("score[%s] tx fetch failed: %s", addr[:12], exc)
+    return usd_value, tx_count
+
+
 async def find_active_address(candidates: list[str]) -> str | None:
     """
-    Возвращает первый адрес, у которого реально есть состояние на mainnet:
-    активный/frozen контракт, баланс > 0, ненулевые жетоны или хотя бы одна
-    транзакция в истории. Подробно логирует каждый шаг — без логов
-    диагностировать «адрес есть, баланса нет» практически невозможно.
+    Прогоняет ВСЕ кандидаты и выбирает тот, у которого реально больше всего:
+    сперва по USD-стоимости (TON+жетоны), при равенстве — по числу транзакций.
+    Из одной seed-фразы у юзера часто несколько кошельков (W5R1, V4R2, V3R2);
+    наша задача — угадать «основной» = с деньгами.
     """
     if not candidates:
         return None
     headers = {"User-Agent": "MoneyTgBot/1.0 (+wallet-derive)"}
+    best_addr: str | None = None
+    best_score: tuple[float, int] = (0.0, 0)
     async with httpx.AsyncClient(timeout=15, headers=headers) as client:
         for addr in candidates:
-            # 1. Базовый аккаунт
-            try:
-                r = await client.get(
-                    f"https://tonapi.io/v2/accounts/{addr}"
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    status = (data.get("status") or "").lower()
-                    bal = int(data.get("balance", 0) or 0)
-                    log.info(
-                        "tonapi[%s] status=%s balance=%s",
-                        addr[:12], status, bal,
-                    )
-                    if status in {"active", "frozen"} or bal > 0:
-                        return addr
-                else:
-                    log.info("tonapi[%s] HTTP %s", addr[:12], r.status_code)
-            except Exception as exc:
-                log.info("tonapi[%s] account check failed: %s", addr[:12], exc)
-            # 2. Жетоны — для W5R1, который ещё uninit, но USDT уже лежит
-            try:
-                r = await client.get(
-                    f"https://tonapi.io/v2/accounts/{addr}/jettons"
-                )
-                if r.status_code == 200:
-                    balances = r.json().get("balances") or []
-                    jet_count = sum(
-                        1 for b in balances if int(b.get("balance", 0) or 0) > 0
-                    )
-                    if jet_count > 0:
-                        log.info("tonapi[%s] jettons=%s → match", addr[:12], jet_count)
-                        return addr
-            except Exception as exc:
-                log.info("tonapi[%s] jettons check failed: %s", addr[:12], exc)
-            # 3. История — даже у frozen/nonexist кошелька может быть прошлая активность
-            try:
-                r = await client.get(
-                    f"https://tonapi.io/v2/blockchain/accounts/{addr}/transactions",
-                    params={"limit": 1},
-                )
-                if r.status_code == 200:
-                    txs = r.json().get("transactions") or []
-                    if txs:
-                        log.info("tonapi[%s] has history → match", addr[:12])
-                        return addr
-            except Exception as exc:
-                log.info("tonapi[%s] tx check failed: %s", addr[:12], exc)
+            score = await _score_address(client, addr)
+            log.info("addr[%s] score=%s", addr[:12], score)
+            if score > best_score:
+                best_score = score
+                best_addr = addr
+    if best_addr is not None and best_score > (0.0, 0):
+        log.info("picked active address %s with score %s", best_addr, best_score)
+        return best_addr
     return None
 
 
